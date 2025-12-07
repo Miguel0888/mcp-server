@@ -89,7 +89,10 @@ class MCPWebSocketServer:
     async def start(self):
         cfg = self.config
         log.info("Starting MCP WebSocket server on ws://%s:%s", cfg.server_host, cfg.server_port)
-        self._server = await websockets.serve(self._handle_client, cfg.server_host, cfg.server_port)
+        try:
+            self._server = await websockets.serve(self._handle_client, cfg.server_host, cfg.server_port)
+        except OSError as exc:
+            raise RuntimeError(f"Server konnte Port {cfg.server_port} nicht binden: {exc}") from exc
 
     async def stop(self):
         if self._server:
@@ -104,7 +107,7 @@ async def run_async(config: Optional[ServerConfig] = None) -> None:
     await server.start()
     try:
         await asyncio.Future()  # run forever
-    except asyncio.CancelledError:
+    finally:
         await server.stop()
 
 
@@ -112,6 +115,9 @@ def run_from_env() -> None:
     cfg = load_config_from_env()
     try:
         asyncio.run(run_async(cfg))
+    except RuntimeError as exc:
+        print(str(exc))
+        raise
     except KeyboardInterrupt:
         pass
 

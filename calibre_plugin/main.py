@@ -53,7 +53,7 @@ class MCPServerRechercheDialog(QDialog):
 
         self.server_monitor = QTimer(self)
         self.server_monitor.setInterval(1000)
-        self.server_monitor.timeout.connect(self._check_server_state)
+        self.server_monitor.timeout.connect(self._monitor_server)
 
         main_layout = QVBoxLayout(self)
         self.setLayout(main_layout)
@@ -129,10 +129,9 @@ class MCPServerRechercheDialog(QDialog):
             self.chat_view.append('System: MCP Server laeuft bereits.')
             return
 
-        host = (prefs['server_host'] or '127.0.0.1').strip()
-        port_text = (prefs['server_port'] or '8765').strip()
+        host = (prefs['server_host'] or '127.0.0.1').strip() or '127.0.0.1'
         try:
-            port = int(port_text)
+            port = int((prefs['server_port'] or '8765').strip() or '8765')
         except ValueError:
             port = 8765
 
@@ -141,12 +140,10 @@ class MCPServerRechercheDialog(QDialog):
             library_path = getattr(self.db, 'library_path', '') or ''
 
         env = os.environ.copy()
-        env['MCP_SERVER_HOST'] = host or '127.0.0.1'
+        env['MCP_SERVER_HOST'] = host
         env['MCP_SERVER_PORT'] = str(port)
         if library_path:
             env['CALIBRE_LIBRARY_PATH'] = library_path
-        elif 'CALIBRE_LIBRARY_PATH' in env:
-            del env['CALIBRE_LIBRARY_PATH']
 
         cmd = [sys.executable, '-m', 'calibre_mcp_server.websocket_server']
 
@@ -155,11 +152,27 @@ class MCPServerRechercheDialog(QDialog):
                 cmd,
                 env=env,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
             )
-        except OSError as exc:  # pragma: no cover - depends on runtime
+        except OSError as exc:
             self.chat_view.append(f'System: Start fehlgeschlagen ({exc}).')
             self.server_process = None
+            return
+
+        # Wait briefly for immediate failure
+        try:
+            code = self.server_process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            code = None
+
+        if code is not None:
+            details = self._drain_process_stderr(self.server_process)
+            self.server_process = None
+            self.chat_view.append(f'System: MCP Server konnte nicht starten (Code {code}).')
+            if details:
+                self.chat_view.append(f'Details: {details}')
             return
 
         self.server_running = True
@@ -176,21 +189,45 @@ class MCPServerRechercheDialog(QDialog):
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        if proc:
+            details = self._drain_process_stderr(proc)
+            if details and self.server_running:
+                self.chat_view.append(f'System: Server-Log: {details}')
         self.server_running = False
         self.server_button.setText('Server starten')
         self.chat_view.append('System: MCP Server wurde gestoppt.')
         self.server_monitor.stop()
 
-    def _check_server_state(self):
-        if self.server_process and self.server_process.poll() is not None:
-            code = self.server_process.returncode
+    def _monitor_server(self):
+        if not self.server_process:
+            return
+        code = self.server_process.poll()
+        if code is not None:
+            details = self._drain_process_stderr(self.server_process)
             self.server_process = None
             self.server_running = False
             self.server_button.setText('Server starten')
             self.chat_view.append(f'System: MCP Server beendet (Code {code}).')
+            if details:
+                self.chat_view.append(f'Details: {details}')
             self.server_monitor.stop()
 
-    def closeEvent(self, event):  # noqa: D401
+    def _drain_process_stderr(self, proc: subprocess.Popen | None) -> str:
+        if not proc or not proc.stderr:
+            return ''
+        try:
+            proc.stderr.seek(0)  # ensure pointer at start if possible
+        except Exception:
+            pass
+        data = proc.stderr.read() or ''
+        try:
+            proc.stderr.close()
+        except Exception:
+            pass
+        text = data.strip()
+        return text[:1000]
+
+    def closeEvent(self, event):
         self._stop_server()
         super().closeEvent(event)
 
