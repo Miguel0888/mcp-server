@@ -19,10 +19,10 @@ class LibraryResearchService(object):
     def fulltext_search(self, query: str, limit: int = 10) -> List[FulltextHit]:
         """Search the Calibre library using metadata.db.
 
-        For now this delegates to MetadataRepository.search_fulltext,
-        which uses simple LIKE matching over title, ISBN and comments.
-        This can later be replaced with a more advanced implementation
-        without changing the MCP tools or their callers.
+        Delegate to MetadataRepository.search_fulltext, which uses simple
+        LIKE matching over title, ISBN and comments. This can later be
+        replaced with a more advanced implementation without changing the
+        MCP tools or their callers.
         """
         return self._metadata_repo.search_fulltext(query=query, limit=limit)
 
@@ -44,7 +44,6 @@ class LibraryResearchService(object):
 
         book_id, title, resolved_isbn, comments = row
         text_source = comments or title or ""
-
         if not text_source:
             return None
 

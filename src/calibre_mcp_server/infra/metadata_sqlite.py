@@ -71,24 +71,68 @@ class MetadataRepository(object):
 
         return hits
 
+    from typing import List, Optional, Tuple
+    # ... Rest der Importe bleibt
+
     def get_book_by_isbn(self, isbn: str) -> Optional[Tuple[int, str, Optional[str], str]]:
-        """Look up a single book by ISBN and return its metadata plus comments."""
-        sql = """
-        SELECT
-            b.id AS book_id,
-            b.title AS title,
-            b.isbn AS isbn,
-            COALESCE(c.text, '') AS comments
-        FROM books b
-        LEFT JOIN comments c ON c.book = b.id
-        WHERE b.isbn = ?
-        LIMIT 1
+        """Look up a single book by ISBN and return its metadata plus comments.
+
+        The lookup tries both books.isbn and the identifiers table. This is
+        necessary because Calibre often stores ISBNs only in identifiers.
         """
+        # Normalize requested ISBN: keep digits and 'X' only
+        normalized_chars = []
+        for ch in isbn:
+            if ch.isdigit() or ch.upper() == "X":
+                normalized_chars.append(ch)
+        normalized = "".join(normalized_chars)
+
+        if not normalized:
+            return None
+
+        # 1) Try identifiers table (isbn / isbn13) – das ist in deiner DB der Fall
+        sql_ident = """
+            SELECT
+                b.id AS book_id,
+                b.title AS title,
+                COALESCE(b.isbn, i.val) AS isbn,
+                COALESCE(c.text, '') AS comments
+            FROM books b
+            JOIN identifiers i ON i.book = b.id
+            LEFT JOIN comments c ON c.book = b.id
+            WHERE
+                lower(i.type) IN ('isbn', 'isbn13')
+                AND REPLACE(REPLACE(i.val, '-', ''), ' ', '') = ?
+            LIMIT 1
+            """
 
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
-            cur.execute(sql, (isbn,))
+            cur.execute(sql_ident, (normalized,))
+            row = cur.fetchone()
+
+            if row is not None:
+                return (
+                    row["book_id"],
+                    row["title"],
+                    row["isbn"],
+                    row["comments"],
+                )
+
+            # 2) Fallback: direct match on books.isbn (für andere Bücher)
+            sql_books = """
+                SELECT
+                    b.id AS book_id,
+                    b.title AS title,
+                    b.isbn AS isbn,
+                    COALESCE(c.text, '') AS comments
+                FROM books b
+                LEFT JOIN comments c ON c.book = b.id
+                WHERE REPLACE(REPLACE(COALESCE(b.isbn, ''), '-', ''), ' ', '') = ?
+                LIMIT 1
+                """
+            cur.execute(sql_books, (normalized,))
             row = cur.fetchone()
 
         if row is None:

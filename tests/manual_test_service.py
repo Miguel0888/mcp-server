@@ -29,7 +29,7 @@ def main() -> None:
             print()
 
     # 2) Excerpt-Test: NIMM HIER EINE ECHTE ISBN AUS CALIBRE
-    test_isbn = "9781234567890"  # gleich unten ersetzen
+    test_isbn = "9783446429338"  # gleich unten ersetzen
     excerpt = service.get_excerpt_by_isbn(isbn=test_isbn, max_chars=400)
 
     print()
