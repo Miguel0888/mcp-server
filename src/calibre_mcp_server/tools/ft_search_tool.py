@@ -1,6 +1,6 @@
 from typing import List, Optional
 
-from fastmcp import FastMCP, MCPToolError
+from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from ..core.models import FulltextHit
@@ -46,7 +46,9 @@ def register_ft_search_tool(mcp: FastMCP, registry: PluginRegistry) -> None:
             )
             processed_hits = registry.apply_fulltext_plugins(raw_hits)
         except Exception as exc:  # pylint: disable=broad-except
-            raise MCPToolError(
+            # Raise generic error so MCP client sees a tool error without
+            # depending on fastmcp internals.
+            raise RuntimeError(
                 f"Full-text search failed: {type(exc).__name__}"
             ) from exc
 

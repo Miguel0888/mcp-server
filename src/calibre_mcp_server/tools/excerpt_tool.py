@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastmcp import FastMCP, MCPToolError
+from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from ..core.models import Excerpt
@@ -53,12 +53,12 @@ def register_excerpt_tool(mcp: FastMCP, registry: PluginRegistry) -> None:
                 max_chars=input.max_chars,
             )
         except Exception as exc:  # pylint: disable=broad-except
-            raise MCPToolError(
+            raise RuntimeError(
                 f"Excerpt retrieval failed: {type(exc).__name__}"
             ) from exc
 
         if excerpt is None:
-            raise MCPToolError("No excerpt found for given ISBN")
+            raise RuntimeError("No excerpt found for given ISBN")
 
         processed = registry.apply_excerpt_plugins(excerpt)
         return _map_excerpt(processed)
