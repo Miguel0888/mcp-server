@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "calibre-mcp-server"
+version = "0.1.0"
+description = "MCP server for Calibre full-text research and excerpts"
+authors = [
+  { name = "Miguel" }
+]
+requires-python = ">=3.10"
+dependencies = [
+  "fastmcp>=0.1.0",
+  "pydantic>=2.0"
+]
+
+[project.scripts]
+calibre-mcp-server = "calibre_mcp_server.main:run"
