@@ -3,7 +3,7 @@
 
 
 __license__   = 'GPL v3'
-©opyright__ = '2025, Miguel Iglesias <https://github.com/Miguel0888/>'
+__copyright__ = '2025, Miguel Iglesias'
 __docformat__ = 'restructuredtext en'
 
 from calibre.gui2.actions import InterfaceAction
@@ -21,7 +21,7 @@ class MCPResearchUI(InterfaceAction):
 
     name = 'MCP Recherche'
 
-    # This defines name, icon, tooltip, shortcut
+    # Name, icon, tooltip, shortcut
     action_spec = (
         _('MCP Recherche'),
         'images/icon.png',
@@ -33,16 +33,16 @@ class MCPResearchUI(InterfaceAction):
     action_type = 'global'
 
     def genesis(self):
-        """Create toolbar action, menu and controller."""
-        # Controller with server running state
+        """Create toolbar action, drop-down menu and controller."""
+        # Create simple controller with server state stub
         self.controller = MCPServerController()
 
-        # Set icon for toolbar button
+        # Set icon and tooltip
         icon = get_icons('images/icon.png', _('MCP Recherche'))
         self.qaction.setIcon(icon)
         self.qaction.setToolTip(_('MCP Recherche und Serversteuerung'))
 
-        # Create drop-down menu on the button (like Ask AI)
+        # Create menu for the action (similar to Ask AI)
         self.menu = QMenu(self.gui)
 
         # 1) Open research dialog
@@ -52,7 +52,7 @@ class MCPResearchUI(InterfaceAction):
 
         self.menu.addSeparator()
 
-        # 2) Start/stop MCP server (UI stub)
+        # 2) Start/stop MCP server (UI stub only)
         self.toggle_server_action = QAction('', self.gui)
         self.toggle_server_action.triggered.connect(self.on_toggle_server)
         self.menu.addAction(self.toggle_server_action)
@@ -60,7 +60,7 @@ class MCPResearchUI(InterfaceAction):
 
         self.menu.addSeparator()
 
-        # 3) Hinweis auf Einstellungen
+        # 3) Hint for settings
         self.settings_action = QAction(_('Einstellungen anzeigen…'), self.gui)
         self.settings_action.triggered.connect(self.show_settings_hint)
         self.menu.addAction(self.settings_action)
@@ -71,18 +71,18 @@ class MCPResearchUI(InterfaceAction):
         # Left-click on button opens dialog directly
         self.qaction.triggered.connect(self.show_dialog)
 
-        # Keep reference to dialog
+        # Keep reference to dialog instance
         self._dialog = None
 
     def _update_server_action_text(self):
-        """Update menu text based on server state."""
+        """Update menu entry text based on server running flag."""
         if self.controller.is_running:
             self.toggle_server_action.setText(_('MCP Server stoppen'))
         else:
             self.toggle_server_action.setText(_('MCP Server starten'))
 
     def on_toggle_server(self):
-        """Handle start/stop of MCP server (currently only flag)."""
+        """Handle start/stop of MCP server (stub only)."""
         try:
             self.controller.toggle_server()
         except Exception as exc:
@@ -97,7 +97,7 @@ class MCPResearchUI(InterfaceAction):
         self._update_server_action_text()
 
     def show_settings_hint(self):
-        """Tell user where to find the settings."""
+        """Show hint where to find plugin settings."""
         error_dialog(
             self.gui,
             _('MCP Einstellungen'),
@@ -119,11 +119,12 @@ class MCPResearchUI(InterfaceAction):
         self._dialog.activateWindow()
 
     def _on_dialog_closed(self, result):
-        """Clear dialog reference when it is closed."""
-        del result  # Avoid unused-variable warning
+        """Clear dialog reference when the window is closed."""
+        # Ignore result value
+        del result
         self._dialog = None
 
     def apply_settings(self):
-        """React to changed settings (no-op for now)."""
-        # Later: update connection label, host/port defaults, etc.
+        """React to changed settings (no logic yet)."""
+        # Later: update dialog labels if needed
         return
