@@ -1,38 +1,39 @@
 #!/usr/bin/env python
 # vim:fileencoding=UTF-8:ts=4:sw=4:sta:et:sts=4:ai
 
+
 __license__   = 'GPL v3'
-__copyright__ = '2025, Miguel Iglesias'
+__copyright__ = '2025, Miguel Iglesias <https://github.com/Miguel0888/>'
 __docformat__ = 'restructuredtext en'
 
 from calibre.customize import InterfaceActionBase
 
-from calibre_plugins.mcp_server.config import prefs
+from calibre_plugins.mcp_server.config import MCPServerConfigWidget, prefs
 
 
 class MCPServerPlugin(InterfaceActionBase):
-    """InterfaceAction wrapper for MCP Server plugin."""
+    """Expose MCP research action to calibre."""
 
-    name = 'MCP Server'
-    description = 'Steuert einen lokalen MCP WebSocket-Server und bietet eine Recherche-Oberfläche.'
+    name = 'MCP Server / Recherche'
+    description = 'UI-Rahmen für MCP WebSocket-Server und Recherche'
     supported_platforms = ['windows', 'osx', 'linux']
     author = 'Miguel Iglesias'
-    version = (1, 0, 0)
+    version = (0, 2, 0)
     minimum_calibre_version = (6, 0, 0)
 
-    actual_plugin = 'calibre_plugins.mcp_server.ui:MCPServerAction'
+    # UI-Klasse in ui.py
+    actual_plugin = 'calibre_plugins.mcp_server.ui:MCPResearchUI'
 
     def is_customizable(self):
-        """Return True to show plugin in preferences dialog."""
+        """Show plugin in calibre preferences."""
         return True
 
     def config_widget(self):
-        """Return configuration widget instance."""
-        from calibre_plugins.mcp_server.config import MCPServerConfigWidget
+        """Create configuration widget instance."""
         return MCPServerConfigWidget(prefs)
 
     def save_settings(self, config_widget):
-        """Persist settings from configuration widget."""
+        """Persist settings and notify running UI."""
         config_widget.save_settings()
 
         ac = self.actual_plugin_

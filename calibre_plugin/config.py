@@ -6,6 +6,8 @@ __license__   = 'GPL v3'
 __copyright__ = '2025, Miguel Iglesias <https://github.com/Miguel0888/>'
 __docformat__ = 'restructuredtext en'
 
+from calibre.utils.config import JSONConfig
+from calibre.utils.localization import _
 from qt.core import (
     QFileDialog,
     QFormLayout,
@@ -16,44 +18,77 @@ from qt.core import (
     QWidget,
 )
 
-from calibre.utils.config import JSONConfig
-from calibre.utils.localization import _
 
+# Store all preferences for this plugin
 prefs = JSONConfig('plugins/mcp_server')
-prefs.defaults['command'] = 'python -m calibre_mcp_server.main'
-prefs.defaults['working_dir'] = ''
+
+# Default values
+prefs.defaults['server_host'] = '127.0.0.1'
+prefs.defaults['server_port'] = '8765'
+prefs.defaults['library_path'] = ''  # Use current calibre library when empty
+prefs.defaults['api_key'] = ''       # Optional AI key
 
 
 class MCPServerConfigWidget(QWidget):
+    """Preference widget for MCP server and AI settings."""
 
-    def __init__(self, prefs, parent=None):
-        super().__init__(parent)
-        self.prefs = prefs
-        self.command_edit = QLineEdit(self.prefs['command'], self)
-        self.workdir_edit = QLineEdit(self.prefs['working_dir'], self)
-        browse_button = QPushButton(_('Auswahl'), self)
-        browse_button.clicked.connect(self.choose_workdir)
+    def __init__(self, prefs_obj, parent=None):
+        QWidget.__init__(self, parent)
+        self.prefs = prefs_obj
 
         layout = QFormLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.addRow(_('Startkommando'), self.command_edit)
 
-        workdir_row = QWidget(self)
-        row_layout = QHBoxLayout(workdir_row)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.addWidget(self.workdir_edit)
-        row_layout.addWidget(browse_button)
-        layout.addRow(_('Arbeitsverzeichnis'), workdir_row)
+        # Host
+        self.host_edit = QLineEdit(self)
+        self.host_edit.setText(self.prefs.get('server_host', '127.0.0.1'))
+        layout.addRow(_('Server-Host'), self.host_edit)
 
-    def choose_workdir(self):
+        # Port
+        self.port_edit = QLineEdit(self)
+        self.port_edit.setText(self.prefs.get('server_port', '8765'))
+        layout.addRow(_('Server-Port'), self.port_edit)
+
+        # Library path + browse button
+        lib_row = QHBoxLayout()
+        self.library_edit = QLineEdit(self)
+        self.library_edit.setText(self.prefs.get('library_path', ''))
+
+        browse_btn = QPushButton(_('Auswahl'), self)
+        browse_btn.clicked.connect(self.choose_library)
+
+        lib_row.addWidget(self.library_edit)
+        lib_row.addWidget(browse_btn)
+
+        layout.addRow(_('Calibre-Bibliothek'), lib_row)
+
+        # API key
+        self.api_key_edit = QLineEdit(self)
+        self.api_key_edit.setText(self.prefs.get('api_key', ''))
+        layout.addRow(_('API Key (z. B. OpenAI)'), self.api_key_edit)
+
+        info = QLabel(
+            _(
+                'Host/Port konfigurieren den MCP WebSocket-Server.\n'
+                'Der Bibliothekspfad überschreibt optional die aktuelle Calibre-Bibliothek.\n'
+                'Der API Key wird später für den AI-Dienst genutzt.'
+            ),
+            self,
+        )
+        layout.addRow(info)
+
+    def choose_library(self):
+        """Let user select calibre library path."""
         path = QFileDialog.getExistingDirectory(
             self,
-            _('Arbeitsverzeichnis auswählen'),
-            self.workdir_edit.text() or '',
+            _('Calibre-Bibliothek auswählen'),
+            self.library_edit.text() or '',
         )
         if path:
-            self.workdir_edit.setText(path)
+            self.library_edit.setText(path)
 
     def save_settings(self):
-        self.prefs['command'] = self.command_edit.text().strip() or ''
-        self.prefs['working_dir'] = self.workdir_edit.text().strip()
+        """Persist values in calibre JSON configuration."""
+        self.prefs['server_host'] = self.host_edit.text().strip() or '127.0.0.1'
+        self.prefs['server_port'] = self.port_edit.text().strip() or '8765'
+        self.prefs['library_path'] = self.library_edit.text().strip()
+        self.prefs['api_key'] = self.api_key_edit.text().strip()
