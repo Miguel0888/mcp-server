@@ -1,43 +1,30 @@
 from typing import List, Optional
 
 from .models import FulltextHit, Excerpt
+from ..infra.metadata_sqlite import MetadataRepository
 
 
 class LibraryResearchService(object):
     """Provide high-level research operations on a Calibre library.
 
-    This implementation currently returns stub data so the MCP wiring
-    can be tested. Later it will talk to Calibre's full-text index and
-    metadata database.
+    This implementation uses Calibre's metadata.db through a small
+    repository wrapper. Later it can be extended to use the dedicated
+    full-text-search.db index and real EPUB content extraction.
     """
 
     def __init__(self, calibre_root_path: str):
         self._root = calibre_root_path
-        # Inject infrastructure helpers later (FTS, metadata, EPUB access).
+        self._metadata_repo = MetadataRepository(calibre_root_path)
 
     def fulltext_search(self, query: str, limit: int = 10) -> List[FulltextHit]:
-        """Return a couple of stub hits for testing the MCP plumbing.
+        """Search the Calibre library using metadata.db.
 
-        This implementation ignores the query and limit parameters and
-        returns static example data. Replace this with real full-text
-        search against full-text-search.db in the next step.
+        For now this delegates to MetadataRepository.search_fulltext,
+        which uses simple LIKE matching over title, ISBN and comments.
+        This can later be replaced with a more advanced implementation
+        without changing the MCP tools or their callers.
         """
-        hits = []
-
-        # Create one synthetic hit so MCP clients can verify the tool works.
-        hits.append(
-            FulltextHit(
-                book_id=1,
-                title="Stub Book",
-                isbn="0000000000",
-                snippet=(
-                    "This is a stub full-text search result for query '%s'. "
-                    "Replace it with real data later." % query
-                ),
-            )
-        )
-
-        return hits[:limit]
+        return self._metadata_repo.search_fulltext(query=query, limit=limit)
 
     def get_excerpt_by_isbn(
         self,
@@ -45,25 +32,42 @@ class LibraryResearchService(object):
         around_text: Optional[str] = None,
         max_chars: int = 1500,
     ) -> Optional[Excerpt]:
-        """Return a static excerpt for testing the MCP plumbing.
+        """Return a simple excerpt based on comments in metadata.db.
 
-        This implementation returns a fixed text block regardless of
-        the requested ISBN. Later this method will resolve the ISBN to
-        a book in the Calibre library and extract real EPUB content.
+        This method resolves the ISBN via metadata.db and returns an
+        excerpt derived from the comments field. It is intentionally
+        simple and will later be replaced by real EPUB content access.
         """
-        dummy_title = "Stub Excerpt Book"
+        row = self._metadata_repo.get_book_by_isbn(isbn)
+        if row is None:
+            return None
 
-        text = (
-            "This is a stub excerpt returned by LibraryResearchService for ISBN %s. "
-            "Replace this implementation with real EPUB reading logic. "
-            "The optional around_text parameter is currently ignored."
-            % isbn
-        )
+        book_id, title, resolved_isbn, comments = row
+        text_source = comments or title or ""
+
+        if not text_source:
+            return None
+
+        cleaned = text_source.strip()
+
+        if around_text:
+            # Try to focus the excerpt around the given fragment.
+            lower_text = cleaned.lower()
+            lower_fragment = around_text.lower()
+            idx = lower_text.find(lower_fragment)
+            if idx >= 0:
+                start = max(idx - max_chars // 2, 0)
+                end = start + max_chars
+                excerpt_text = cleaned[start:end]
+            else:
+                excerpt_text = cleaned[:max_chars]
+        else:
+            excerpt_text = cleaned[:max_chars]
 
         return Excerpt(
-            book_id=1,
-            title=dummy_title,
-            isbn=isbn,
-            text=text[:max_chars],
-            source_hint="stub",
+            book_id=book_id,
+            title=title,
+            isbn=resolved_isbn,
+            text=excerpt_text,
+            source_hint="metadata.comments",
         )
