@@ -1,0 +1,41 @@
+name: Release Calibre MCP Server
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install package (editable)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Smoke test (compile sources)
+        run: |
+          python -m compileall src
+
+      - name: Build Calibre plugin zip
+        run: |
+          mkdir -p dist
+          cd calibre_plugin
+          zip -r ../dist/calibre-mcp-plugin.zip .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/calibre-mcp-plugin.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
