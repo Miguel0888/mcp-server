@@ -32,7 +32,7 @@ prefs.defaults['library_path'] = ''   # Use current calibre library when empty
 prefs.defaults['api_key'] = ''        # Optional AI key (e.g. OpenAI)
 
 
-class ConfigWidget(QWidget):
+class MCPServerRechercheConfigWidget(QWidget):
     """Preference widget for MCP Server Recherche plugin."""
 
     def __init__(self):

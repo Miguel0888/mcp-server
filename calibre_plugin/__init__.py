@@ -10,10 +10,10 @@ __docformat__ = 'restructuredtext en'
 from calibre.customize import InterfaceActionBase
 
 
-class InterfacePluginDemo(InterfaceActionBase):
+class MCPServerRecherchePlugin(InterfaceActionBase):
     '''
     This class is a simple wrapper that provides information about the actual
-    plugin class. The actual interface plugin class is called InterfacePlugin
+    plugin class. The actual interface plugin class is called MCPServerRechercheAction
     and is defined in the ui.py file, as specified in the actual_plugin field
     below.
 
@@ -30,7 +30,7 @@ class InterfacePluginDemo(InterfaceActionBase):
     #: This field defines the GUI plugin class that contains all the code
     #: that actually does something. Its format is module_path:class_name
     #: The specified class must be defined in the specified module.
-    actual_plugin       = 'calibre_plugins.interface_demo.ui:InterfacePlugin'
+    actual_plugin       = 'calibre_plugins.interface_demo.ui:MCPServerRechercheAction'
 
     def is_customizable(self):
         '''
@@ -62,7 +62,7 @@ class InterfacePluginDemo(InterfaceActionBase):
         # GUI libraries to be loaded, which we do not want when using calibre
         # from the command line
         from calibre_plugins.interface_demo.config import ConfigWidget
-        return ConfigWidget()
+        return MCPServerRechercheConfigWidget()
 
     def save_settings(self, config_widget):
         '''

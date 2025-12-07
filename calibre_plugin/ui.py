@@ -17,7 +17,7 @@ from calibre.gui2.actions import InterfaceAction
 from calibre_plugins.interface_demo.main import DemoDialog
 
 
-class InterfacePlugin(InterfaceAction):
+class MCPServerRechercheAction(InterfaceAction):
 
     name = 'Interface Plugin Demo'
 
