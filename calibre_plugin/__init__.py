@@ -20,12 +20,12 @@ class InterfacePluginDemo(InterfaceActionBase):
     The reason for having two classes is that it allows the command line
     calibre utilities to run without needing to load the GUI libraries.
     '''
-    name                = 'Interface Plugin Demo'
-    description         = 'An advanced plugin demo'
+    name = 'MCP Server Recherche'
+    description = 'Frontend fuer MCP-basierte Recherche in Calibre'
     supported_platforms = ['windows', 'osx', 'linux']
-    author              = 'Kovid Goyal'
-    version             = (1, 0, 0)
-    minimum_calibre_version = (0, 7, 53)
+    author = 'Miguel Iglesias'
+    version = (0, 1, 0)
+    minimum_calibre_version = (6, 0, 0)
 
     #: This field defines the GUI plugin class that contains all the code
     #: that actually does something. Its format is module_path:class_name
