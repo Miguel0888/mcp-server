@@ -15,8 +15,9 @@ from calibre_plugins.mcp_server.config import prefs
 
 
 class MCPServerController:
-    def __init__(self, prefs=prefs):
+    def __init__(self, prefs=prefs, library_path=None):
         self.prefs = prefs
+        self.library_path = library_path
         self._process = None
         self._lock = threading.Lock()
 
@@ -27,10 +28,15 @@ class MCPServerController:
             command = self._parse_command()
             if not command:
                 raise RuntimeError('Startkommando fehlt')
+            env = os.environ.copy()
+            effective_path = self.library_path or env.get('CALIBRE_LIBRARY_PATH')
+            if effective_path:
+                env['CALIBRE_LIBRARY_PATH'] = effective_path
             kwargs = {
                 'cwd': self.prefs['working_dir'] or None,
                 'stdout': subprocess.DEVNULL,
                 'stderr': subprocess.STDOUT,
+                'env': env,
             }
             if os.name == 'nt':
                 kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -68,3 +74,6 @@ class MCPServerController:
             return shlex.split(raw, posix=os.name != 'nt')
         except ValueError:
             return raw.split()
+
+    def set_library_path(self, library_path):
+        self.library_path = library_path
