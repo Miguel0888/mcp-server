@@ -12,6 +12,10 @@ if False:
     # You do not need this code in your plugins
     get_icons = get_resources = None
 
+import os
+import subprocess
+import sys
+
 from qt.core import (
     QDialog,
     QLabel,
@@ -43,8 +47,13 @@ class MCPServerRechercheDialog(QDialog):
         self.db = gui.current_db
 
         self.server_running = False
+        self.server_process: subprocess.Popen | None = None
         self.chat_client = ChatProviderClient(prefs)
         self.pending_request = False
+
+        self.server_monitor = QTimer(self)
+        self.server_monitor.setInterval(1000)
+        self.server_monitor.timeout.connect(self._check_server_state)
 
         main_layout = QVBoxLayout(self)
         self.setLayout(main_layout)
@@ -102,24 +111,90 @@ class MCPServerRechercheDialog(QDialog):
         """Open calibre's plugin configuration dialog."""
         self.do_user_config(parent=self)
         self.chat_client = ChatProviderClient(prefs)
+        self._update_conn_label()
 
-        # Update connection label after changes
-        host = prefs['server_host']
-        port = prefs['server_port']
+    def _update_conn_label(self):
+        host = prefs['server_host'] or '127.0.0.1'
+        port = prefs['server_port'] or '8765'
         self.conn_label.setText(f'Ziel (spaeter): ws://{host}:{port}')
 
     def toggle_server(self):
-        """Toggle server running flag (no real server yet)."""
-        self.server_running = not self.server_running
         if self.server_running:
-            self.server_button.setText('Server stoppen')
-            self.chat_view.append('System: MCP Server wurde (logisch) gestartet.')
+            self._stop_server()
         else:
+            self._start_server()
+
+    def _start_server(self):
+        if self.server_process and self.server_process.poll() is None:
+            self.chat_view.append('System: MCP Server laeuft bereits.')
+            return
+
+        host = (prefs['server_host'] or '127.0.0.1').strip()
+        port_text = (prefs['server_port'] or '8765').strip()
+        try:
+            port = int(port_text)
+        except ValueError:
+            port = 8765
+
+        library_path = prefs['library_path'].strip()
+        if not library_path:
+            library_path = getattr(self.db, 'library_path', '') or ''
+
+        env = os.environ.copy()
+        env['MCP_SERVER_HOST'] = host or '127.0.0.1'
+        env['MCP_SERVER_PORT'] = str(port)
+        if library_path:
+            env['CALIBRE_LIBRARY_PATH'] = library_path
+        elif 'CALIBRE_LIBRARY_PATH' in env:
+            del env['CALIBRE_LIBRARY_PATH']
+
+        cmd = [sys.executable, '-m', 'calibre_mcp_server.websocket_server']
+
+        try:
+            self.server_process = subprocess.Popen(
+                cmd,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:  # pragma: no cover - depends on runtime
+            self.chat_view.append(f'System: Start fehlgeschlagen ({exc}).')
+            self.server_process = None
+            return
+
+        self.server_running = True
+        self.server_button.setText('Server stoppen')
+        self.chat_view.append(f'System: MCP Server gestartet auf ws://{host}:{port}.')
+        self.server_monitor.start()
+
+    def _stop_server(self):
+        proc = self.server_process
+        self.server_process = None
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        self.server_running = False
+        self.server_button.setText('Server starten')
+        self.chat_view.append('System: MCP Server wurde gestoppt.')
+        self.server_monitor.stop()
+
+    def _check_server_state(self):
+        if self.server_process and self.server_process.poll() is not None:
+            code = self.server_process.returncode
+            self.server_process = None
+            self.server_running = False
             self.server_button.setText('Server starten')
-            self.chat_view.append('System: MCP Server wurde (logisch) gestoppt.')
+            self.chat_view.append(f'System: MCP Server beendet (Code {code}).')
+            self.server_monitor.stop()
+
+    def closeEvent(self, event):  # noqa: D401
+        self._stop_server()
+        super().closeEvent(event)
 
     def send_message(self):
-        """Send message via configured provider."""
         if self.pending_request:
             return
         text = self.input_edit.text().strip()
@@ -130,7 +205,6 @@ class MCPServerRechercheDialog(QDialog):
         self._toggle_send_state(True)
         QTimer.singleShot(0, lambda: self._process_chat(text))
 
-    # ------------------------------------------------------------------ chat
     def _process_chat(self, text: str):
         try:
             response = self.chat_client.send_chat(text)

@@ -15,9 +15,9 @@ from qt.core import (
     QLineEdit,
     QPushButton,
     QFileDialog,
-    QComboBox,
-    QGroupBox,
     QVBoxLayout,
+    QGroupBox,
+    QComboBox,
     QCheckBox,
 )
 
@@ -51,7 +51,8 @@ class MCPServerRechercheConfigWidget(QWidget):
         QWidget.__init__(self)
 
         layout = QVBoxLayout(self)
-        # Network group ----------------------------------------------------
+
+        # Connection settings ------------------------------------------------
         server_group = QGroupBox(_('MCP Server Einstellungen'), self)
         server_form = QFormLayout(server_group)
         server_group.setLayout(server_form)
@@ -80,9 +81,20 @@ class MCPServerRechercheConfigWidget(QWidget):
 
         server_form.addRow(_('Calibre-Bibliothek:'), lib_row)
 
-        # ------------------------------------------------------------------
+        # Info label
+        info = QLabel(
+            _(
+                'Host/Port konfigurieren spaeter den MCP WebSocket-Server.\n'
+                'Der Bibliothekspfad ueberschreibt optional die aktuelle Calibre-Bibliothek.'
+            ),
+            self,
+        )
+        server_form.addRow(info)
+
+        # AI provider settings ----------------------------------------------
         provider_group = QGroupBox(_('AI Provider'), self)
         provider_layout = QVBoxLayout(provider_group)
+        layout.addWidget(provider_group)
 
         self.provider_combo = QComboBox(self)
         self.provider_combo.currentIndexChanged.connect(self._provider_changed)
@@ -113,30 +125,17 @@ class MCPServerRechercheConfigWidget(QWidget):
         self.temperature_edit = QLineEdit(self)
         form.addRow(_('Temperatur:'), self.temperature_edit)
 
-        layout.addWidget(provider_group)
-
-        # Selection row ----------------------------------------------------
         selection_row = QHBoxLayout()
-        self.selected_provider_label = QLabel('', self)
+        self.selected_provider_label = QLabel(_('Kein Provider'), self)
         self.selected_model_label = QLabel('', self)
         selection_row.addWidget(QLabel(_('Aktiv:'), self))
         selection_row.addWidget(self.selected_provider_label)
         selection_row.addSpacing(8)
         selection_row.addWidget(self.selected_model_label)
-        choose_btn = QPushButton(_('Modell wählen'), self)
+        choose_btn = QPushButton(_('Standard setzen'), self)
         choose_btn.clicked.connect(self.choose_model)
         selection_row.addWidget(choose_btn)
-        layout.addLayout(selection_row)
-
-        # Info label
-        info = QLabel(
-            _(
-                'Host/Port konfigurieren spaeter den MCP WebSocket-Server.\n'
-                'AI-Provider Einstellungen gelten fuer den Chat und senden keine Buch-Metadaten.'
-            ),
-            self,
-        )
-        layout.addWidget(info)
+        provider_layout.addLayout(selection_row)
 
         self._load_providers()
         self._update_selection_labels()
@@ -156,11 +155,10 @@ class MCPServerRechercheConfigWidget(QWidget):
         prefs['server_host'] = self.host_edit.text().strip() or '127.0.0.1'
         prefs['server_port'] = self.port_edit.text().strip() or '8765'
         prefs['library_path'] = self.library_edit.text().strip()
-
         self._persist_provider_settings()
         self._update_selection_labels()
 
-    # ------------------------------------------------------------------ AI
+    # ------------------------------------------------------------------ AI helpers
     def _load_providers(self):
         self._models = ensure_model_prefs(prefs)
         self.provider_combo.blockSignals(True)
@@ -171,8 +169,8 @@ class MCPServerRechercheConfigWidget(QWidget):
         self._provider_changed(self.provider_combo.currentIndex())
 
     def _provider_changed(self, index: int):
-        key = self.provider_combo.itemData(index)
-        cfg = self._models.get(key, {})
+        provider_key = self.provider_combo.itemData(index)
+        cfg = self._models.get(provider_key, {})
         self.provider_enabled.setChecked(bool(cfg.get('enabled')))
         self.display_name_edit.setText(cfg.get('display_name', ''))
         self.base_url_edit.setText(cfg.get('base_url', ''))
@@ -183,10 +181,10 @@ class MCPServerRechercheConfigWidget(QWidget):
 
     def _persist_provider_settings(self):
         index = self.provider_combo.currentIndex()
-        key = self.provider_combo.itemData(index)
-        if not key:
+        provider_key = self.provider_combo.itemData(index)
+        if not provider_key:
             return
-        cfg = self._models.setdefault(key, {})
+        cfg = self._models.setdefault(provider_key, {})
         cfg['enabled'] = self.provider_enabled.isChecked()
         cfg['display_name'] = self.display_name_edit.text().strip()
         cfg['base_url'] = self.base_url_edit.text().strip()
@@ -200,21 +198,17 @@ class MCPServerRechercheConfigWidget(QWidget):
         prefs['models'] = self._models
 
     def choose_model(self):
-        selected = get_selected_model(prefs)
-        current_provider = selected.get('provider')
         models = ensure_model_prefs(prefs)
         enabled = list_enabled_providers(models)
         if not enabled:
             self.selected_provider_label.setText(_('Kein aktiver Provider'))
             self.selected_model_label.setText('')
             return
-        # If currently selected provider disabled, pick first enabled
-        if not current_provider or current_provider not in enabled:
-            first_key = next(iter(enabled.keys()))
-            set_selected_model(prefs, first_key, enabled[first_key].get('model', ''))
-        else:
-            current_cfg = enabled[current_provider]
-            set_selected_model(prefs, current_provider, current_cfg.get('model', ''))
+        key = self.provider_combo.itemData(self.provider_combo.currentIndex())
+        if key not in enabled:
+            key = next(iter(enabled.keys()))
+        model_name = enabled[key].get('model', '')
+        set_selected_model(prefs, key, model_name)
         self._update_selection_labels()
 
     def _update_selection_labels(self):
