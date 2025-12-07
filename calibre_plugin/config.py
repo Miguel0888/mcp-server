@@ -1,40 +1,99 @@
 #!/usr/bin/env python
 # vim:fileencoding=UTF-8:ts=4:sw=4:sta:et:sts=4:ai
 
-
 __license__   = 'GPL v3'
-__copyright__ = '2011, Kovid Goyal <kovid@kovidgoyal.net>'
+__copyright__ = '2025, Miguel Iglesias'
 __docformat__ = 'restructuredtext en'
 
-from qt.core import QHBoxLayout, QLabel, QLineEdit, QWidget
-
 from calibre.utils.config import JSONConfig
+from calibre.utils.localization import _
+from qt.core import (
+    QWidget,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QFileDialog,
+)
 
-# This is where all preferences for this plugin will be stored
-# Remember that this name (i.e. plugins/interface_demo) is also
-# in a global namespace, so make it as unique as possible.
-# You should always prefix your config file name with plugins/,
-# so as to ensure you don't accidentally clobber a calibre config file
-prefs = JSONConfig('plugins/interface_demo')
 
-# Set defaults
+# This is where all preferences for this plugin will be stored.
+# Name is global, so keep it reasonably unique.
+prefs = JSONConfig('plugins/mcp_server_recherche')
+
+# Old demo default to keep main.py happy
 prefs.defaults['hello_world_msg'] = 'Hello, World!'
+
+# New settings for MCP server / AI
+prefs.defaults['server_host'] = '127.0.0.1'
+prefs.defaults['server_port'] = '8765'
+prefs.defaults['library_path'] = ''   # Use current calibre library when empty
+prefs.defaults['api_key'] = ''        # Optional AI key (e.g. OpenAI)
 
 
 class ConfigWidget(QWidget):
+    """Preference widget for MCP Server Recherche plugin."""
 
     def __init__(self):
         QWidget.__init__(self)
-        self.l = QHBoxLayout()
-        self.setLayout(self.l)
 
-        self.label = QLabel('Hello world &message:')
-        self.l.addWidget(self.label)
+        layout = QFormLayout(self)
+        self.setLayout(layout)
 
-        self.msg = QLineEdit(self)
-        self.msg.setText(prefs['hello_world_msg'])
-        self.l.addWidget(self.msg)
-        self.label.setBuddy(self.msg)
+        # Server host
+        self.host_edit = QLineEdit(self)
+        self.host_edit.setText(prefs['server_host'])
+        layout.addRow(_('Server-Host:'), self.host_edit)
+
+        # Server port
+        self.port_edit = QLineEdit(self)
+        self.port_edit.setText(prefs['server_port'])
+        layout.addRow(_('Server-Port:'), self.port_edit)
+
+        # Library path with browse button
+        lib_row = QHBoxLayout()
+        self.library_edit = QLineEdit(self)
+        self.library_edit.setText(prefs['library_path'])
+
+        browse_lib_btn = QPushButton(_('Auswahl'), self)
+        browse_lib_btn.clicked.connect(self.choose_library)
+
+        lib_row.addWidget(self.library_edit)
+        lib_row.addWidget(browse_lib_btn)
+
+        layout.addRow(_('Calibre-Bibliothek:'), lib_row)
+
+        # API key
+        self.api_key_edit = QLineEdit(self)
+        self.api_key_edit.setText(prefs['api_key'])
+        layout.addRow(_('API Key (z. B. OpenAI):'), self.api_key_edit)
+
+        # Info label
+        info = QLabel(
+            _(
+                'Host/Port konfigurieren spaeter den MCP WebSocket-Server.\n'
+                'Der Bibliothekspfad ueberschreibt optional die aktuelle '
+                'Calibre-Bibliothek.\n'
+                'Der API Key wird fuer den AI-Dienst genutzt.'
+            ),
+            self,
+        )
+        layout.addRow(info)
+
+    def choose_library(self):
+        """Let user select calibre library root directory."""
+        path = QFileDialog.getExistingDirectory(
+            self,
+            _('Calibre-Bibliothek auswaehlen'),
+            self.library_edit.text() or '',
+        )
+        if path:
+            self.library_edit.setText(path)
 
     def save_settings(self):
-        prefs['hello_world_msg'] = self.msg.text()
+        """Persist user changes to JSONConfig."""
+        prefs['server_host'] = self.host_edit.text().strip() or '127.0.0.1'
+        prefs['server_port'] = self.port_edit.text().strip() or '8765'
+        prefs['library_path'] = self.library_edit.text().strip()
+        prefs['api_key'] = self.api_key_edit.text().strip()
