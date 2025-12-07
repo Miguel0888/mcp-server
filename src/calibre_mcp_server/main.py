@@ -1,4 +1,5 @@
 from fastmcp import FastMCP
+from fastmcp.transports.websockets import WebSocketSettings, WebSocketTransport
 
 from .config import load_config
 from .core.service import LibraryResearchService
@@ -24,7 +25,8 @@ def create_mcp_server() -> FastMCP:
 def run() -> None:
     """Run MCP server using stdio transport."""
     server = create_mcp_server()
-    server.run()
+    transport = WebSocketTransport(settings=WebSocketSettings())
+    server.run(transport=transport)
 
 
 if __name__ == "__main__":
