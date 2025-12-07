@@ -1,6 +1,7 @@
-The MCP Server Recherche Plugin
+The Interface Plugin Demo
 ===========================
 
-Created by Miguel Iglesias
+Created by Kovid Goyal
 
-Requires calibre >= 6.0
+Requires calibre >= 0.7.53
+

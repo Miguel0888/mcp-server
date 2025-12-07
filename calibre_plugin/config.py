@@ -3,93 +3,38 @@
 
 
 __license__   = 'GPL v3'
-__copyright__ = '2025, Miguel Iglesias <https://github.com/Miguel0888/>'
+__copyright__ = '2011, Kovid Goyal <kovid@kovidgoyal.net>'
 __docformat__ = 'restructuredtext en'
 
+from qt.core import QHBoxLayout, QLabel, QLineEdit, QWidget
+
 from calibre.utils.config import JSONConfig
-from calibre.utils.localization import _
-from qt.core import (
-    QFileDialog,
-    QFormLayout,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QPushButton,
-    QWidget,
-)
+
+# This is where all preferences for this plugin will be stored
+# Remember that this name (i.e. plugins/interface_demo) is also
+# in a global namespace, so make it as unique as possible.
+# You should always prefix your config file name with plugins/,
+# so as to ensure you don't accidentally clobber a calibre config file
+prefs = JSONConfig('plugins/interface_demo')
+
+# Set defaults
+prefs.defaults['hello_world_msg'] = 'Hello, World!'
 
 
-# Global preferences for this plugin
-prefs = JSONConfig('plugins/mcp_server')
+class ConfigWidget(QWidget):
 
-# Default values
-prefs.defaults['server_host'] = '127.0.0.1'
-prefs.defaults['server_port'] = '8765'
-prefs.defaults['library_path'] = ''  # Use current calibre library when empty
-prefs.defaults['api_key'] = ''       # Optional AI key
+    def __init__(self):
+        QWidget.__init__(self)
+        self.l = QHBoxLayout()
+        self.setLayout(self.l)
 
+        self.label = QLabel('Hello world &message:')
+        self.l.addWidget(self.label)
 
-class MCPServerConfigWidget(QWidget):
-    """Preference widget for MCP server and AI settings."""
-
-    def __init__(self, prefs_obj, parent=None):
-        QWidget.__init__(self, parent)
-        # Store reference to prefs
-        self.prefs = prefs_obj
-
-        layout = QFormLayout(self)
-
-        # Host
-        self.host_edit = QLineEdit(self)
-        self.host_edit.setText(self.prefs.get('server_host', '127.0.0.1'))
-        layout.addRow(_('Server-Host'), self.host_edit)
-
-        # Port
-        self.port_edit = QLineEdit(self)
-        self.port_edit.setText(self.prefs.get('server_port', '8765'))
-        layout.addRow(_('Server-Port'), self.port_edit)
-
-        # Library path
-        lib_row = QHBoxLayout()
-        self.library_edit = QLineEdit(self)
-        self.library_edit.setText(self.prefs.get('library_path', ''))
-
-        browse_btn = QPushButton(_('Auswahl'), self)
-        browse_btn.clicked.connect(self.choose_library)
-
-        lib_row.addWidget(self.library_edit)
-        lib_row.addWidget(browse_btn)
-
-        layout.addRow(_('Calibre-Bibliothek'), lib_row)
-
-        # API key
-        self.api_key_edit = QLineEdit(self)
-        self.api_key_edit.setText(self.prefs.get('api_key', ''))
-        layout.addRow(_('API Key (z. B. OpenAI)'), self.api_key_edit)
-
-        info = QLabel(
-            _(
-                'Host/Port konfigurieren den MCP WebSocket-Server.\n'
-                'Der Bibliothekspfad ueberschreibt optional die aktuelle Calibre-Bibliothek.\n'
-                'Der API Key wird spaeter fuer den AI-Dienst genutzt.'
-            ),
-            self,
-        )
-        layout.addRow(info)
-
-    def choose_library(self):
-        """Let user select calibre library path."""
-        path = QFileDialog.getExistingDirectory(
-            self,
-            _('Calibre-Bibliothek auswaehlen'),
-            self.library_edit.text() or '',
-        )
-        if path:
-            self.library_edit.setText(path)
+        self.msg = QLineEdit(self)
+        self.msg.setText(prefs['hello_world_msg'])
+        self.l.addWidget(self.msg)
+        self.label.setBuddy(self.msg)
 
     def save_settings(self):
-        """Persist values in calibre JSON configuration."""
-        self.prefs['server_host'] = self.host_edit.text().strip() or '127.0.0.1'
-        self.prefs['server_port'] = self.port_edit.text().strip() or '8765'
-        self.prefs['library_path'] = self.library_edit.text().strip()
-        self.prefs['api_key'] = self.api_key_edit.text().strip()
+        prefs['hello_world_msg'] = self.msg.text()
