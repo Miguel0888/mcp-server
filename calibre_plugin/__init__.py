@@ -14,7 +14,7 @@ from calibre_plugins.mcp_server.config import MCPServerConfigWidget, prefs
 class MCPServerPlugin(InterfaceActionBase):
     """Expose MCP research action to calibre."""
 
-    name = 'MCP Server / Recherche'
+    name = 'MCP Server Recherche'
     description = 'UI-Rahmen für MCP WebSocket-Server und Recherche'
     supported_platforms = ['windows', 'osx', 'linux']
     author = 'Miguel Iglesias'

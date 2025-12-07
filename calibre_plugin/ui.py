@@ -103,7 +103,7 @@ class MCPResearchUI(InterfaceAction):
             _('MCP Einstellungen'),
             _(
                 'Die Einstellungen für den MCP Server findest du unter:\n'
-                'Einstellungen → Plugins → MCP Server / Recherche → Konfigurieren.'
+                'Einstellungen → Plugins → MCP Server Recherche → Konfigurieren.'
             ),
             show=True,
         )
