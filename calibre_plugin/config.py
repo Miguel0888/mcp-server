@@ -3,38 +3,57 @@
 
 
 __license__   = 'GPL v3'
-__copyright__ = '2011, Kovid Goyal <kovid@kovidgoyal.net>'
+__copyright__ = '2011, Kovid Goyal <kovidgoyal.net>'
 __docformat__ = 'restructuredtext en'
 
-from qt.core import QHBoxLayout, QLabel, QLineEdit, QWidget
+from qt.core import (
+    QFileDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QWidget,
+)
 
 from calibre.utils.config import JSONConfig
+from calibre.utils.localization import _
 
-# This is where all preferences for this plugin will be stored
-# Remember that this name (i.e. plugins/interface_demo) is also
-# in a global namespace, so make it as unique as possible.
-# You should always prefix your config file name with plugins/,
-# so as to ensure you don't accidentally clobber a calibre config file
-prefs = JSONConfig('plugins/interface_demo')
-
-# Set defaults
-prefs.defaults['hello_world_msg'] = 'Hello, World!'
+prefs = JSONConfig('plugins/mcp_server')
+prefs.defaults['command'] = 'python -m calibre_mcp_server.main'
+prefs.defaults['working_dir'] = ''
 
 
-class ConfigWidget(QWidget):
+class MCPServerConfigWidget(QWidget):
 
-    def __init__(self):
-        QWidget.__init__(self)
-        self.l = QHBoxLayout()
-        self.setLayout(self.l)
+    def __init__(self, prefs, parent=None):
+        super().__init__(parent)
+        self.prefs = prefs
+        self.command_edit = QLineEdit(self.prefs['command'], self)
+        self.workdir_edit = QLineEdit(self.prefs['working_dir'], self)
+        browse_button = QPushButton(_('Auswahl'), self)
+        browse_button.clicked.connect(self.choose_workdir)
 
-        self.label = QLabel('Hello world &message:')
-        self.l.addWidget(self.label)
+        layout = QFormLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.addRow(_('Startkommando'), self.command_edit)
 
-        self.msg = QLineEdit(self)
-        self.msg.setText(prefs['hello_world_msg'])
-        self.l.addWidget(self.msg)
-        self.label.setBuddy(self.msg)
+        workdir_row = QWidget(self)
+        row_layout = QHBoxLayout(workdir_row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(self.workdir_edit)
+        row_layout.addWidget(browse_button)
+        layout.addRow(_('Arbeitsverzeichnis'), workdir_row)
+
+    def choose_workdir(self):
+        path = QFileDialog.getExistingDirectory(
+            self,
+            _('Arbeitsverzeichnis auswählen'),
+            self.workdir_edit.text() or '',
+        )
+        if path:
+            self.workdir_edit.setText(path)
 
     def save_settings(self):
-        prefs['hello_world_msg'] = self.msg.text()
+        self.prefs['command'] = self.command_edit.text().strip() or ''
+        self.prefs['working_dir'] = self.workdir_edit.text().strip()

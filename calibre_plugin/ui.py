@@ -6,65 +6,49 @@ __license__   = 'GPL v3'
 __copyright__ = '2011, Kovid Goyal <kovid@kovidgoyal.net>'
 __docformat__ = 'restructuredtext en'
 
-if False:
-    # This is here to keep my python error checker from complaining about
-    # the builtin functions that will be defined by the plugin loading system
-    # You do not need this code in your plugins
-    get_icons = get_resources = None
-
-# The class that all interface action plugins must inherit from
+from calibre.gui2 import error_dialog, info_dialog
 from calibre.gui2.actions import InterfaceAction
-from calibre_plugins.interface_demo.main import DemoDialog
+from calibre.utils.localization import _
+from qt.core import QAction, QMenu
+
+from calibre_plugins.mcp_server.controller import MCPServerController
 
 
-class InterfacePlugin(InterfaceAction):
+class MCPServerAction(InterfaceAction):
 
-    name = 'Interface Plugin Demo'
-
-    # Declare the main action associated with this plugin
-    # The keyboard shortcut can be None if you don't want to use a keyboard
-    # shortcut. Remember that currently calibre has no central management for
-    # keyboard shortcuts, so try to use an unusual/unused shortcut.
-    action_spec = ('Interface Plugin Demo', None,
-            'Run the Interface Plugin Demo', 'Ctrl+Shift+F1')
+    name = 'MCP Server'
 
     def genesis(self):
-        # This method is called once per plugin, do initial setup here
+        self.controller = MCPServerController()
+        self.menu = QMenu(_('MCP Server'), self.gui)
+        menu_bar = self.gui.menuBar()
+        menu_bar.addMenu(self.menu)
 
-        # Set the icon for this interface action
-        # The get_icons function is a builtin function defined for all your
-        # plugin code. It loads icons from the plugin zip file. It returns
-        # QIcon objects, if you want the actual data, use the analogous
-        # get_resources builtin function.
-        #
-        # Note that if you are loading more than one icon, for performance, you
-        # should pass a list of names to get_icons. In this case, get_icons
-        # will return a dictionary mapping names to QIcons. Names that
-        # are not found in the zip file will result in null QIcons.
-        icon = get_icons('images/icon.png', 'Interface Demo Plugin')
+        icon = get_icons('images/icon.png', _('MCP Server'))
+        self.toggle_action = QAction(icon, _('MCP Server starten'), self.gui)
+        self.toggle_action.setCheckable(True)
+        self.toggle_action.triggered.connect(self.toggle_server)
+        self.menu.addAction(self.toggle_action)
+        self.update_toggle()
 
-        # The qaction is automatically created from the action_spec defined
-        # above
-        self.qaction.setIcon(icon)
-        self.qaction.triggered.connect(self.show_dialog)
+    def toggle_server(self):
+        try:
+            if not self.controller.toggle():
+                return
+        except Exception as exc:
+            error_dialog(self.gui, _('MCP Server'), _('Fehler beim Umschalten des Servers'), det_msg=str(exc), show=True)
+            return
+        if self.controller.is_running:
+            info_dialog(self.gui, _('MCP Server'), _('Server wurde gestartet.'), show=True)
+        else:
+            info_dialog(self.gui, _('MCP Server'), _('Server wurde gestoppt.'), show=True)
+        self.update_toggle()
 
-    def show_dialog(self):
-        # The base plugin object defined in __init__.py
-        base_plugin_object = self.interface_action_base_plugin
-        # Show the config dialog
-        # The config dialog can also be shown from within
-        # Preferences->Plugins, which is why the do_user_config
-        # method is defined on the base plugin class
-        do_user_config = base_plugin_object.do_user_config
-
-        # self.gui is the main calibre GUI. It acts as the gateway to access
-        # all the elements of the calibre user interface, it should also be the
-        # parent of the dialog
-        d = DemoDialog(self.gui, self.qaction.icon(), do_user_config)
-        d.show()
+    def update_toggle(self):
+        running = self.controller.is_running
+        self.toggle_action.setChecked(running)
+        self.toggle_action.setText(_('MCP Server stoppen') if running else _('MCP Server starten'))
 
     def apply_settings(self):
-        from calibre_plugins.interface_demo.config import prefs
-        # In an actual non trivial plugin, you would probably need to
-        # do something based on the settings in prefs
-        prefs
+        # Called after preferences change, ensure menu state matches
+        self.update_toggle()
