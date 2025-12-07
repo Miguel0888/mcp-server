@@ -1,7 +1,7 @@
-The Interface Plugin Demo
+The MCP Plugin
 ===========================
 
-Created by Kovid Goyal
+Created by Miguel Iglesias
 
 Requires calibre >= 0.7.53
 
