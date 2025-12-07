@@ -20,9 +20,11 @@ from qt.core import (
     QHBoxLayout,
     QTextEdit,
     QLineEdit,
+    QTimer,
 )
 
 from calibre_plugins.mcp_server_recherche.config import prefs
+from calibre_plugins.mcp_server_recherche.provider_client import ChatProviderClient
 
 
 class MCPServerRechercheDialog(QDialog):
@@ -41,6 +43,8 @@ class MCPServerRechercheDialog(QDialog):
         self.db = gui.current_db
 
         self.server_running = False
+        self.chat_client = ChatProviderClient(prefs)
+        self.pending_request = False
 
         main_layout = QVBoxLayout(self)
         self.setLayout(main_layout)
@@ -80,7 +84,7 @@ class MCPServerRechercheDialog(QDialog):
             'Frage oder Suchtext fuer die MCP-Recherche eingeben ...'
         )
 
-        self.send_button = QPushButton('Senden (Stub)', self)
+        self.send_button = QPushButton('Senden', self)
         self.send_button.clicked.connect(self.send_message)
 
         bottom_row.addWidget(self.input_edit, 1)
@@ -97,6 +101,7 @@ class MCPServerRechercheDialog(QDialog):
     def open_settings(self):
         """Open calibre's plugin configuration dialog."""
         self.do_user_config(parent=self)
+        self.chat_client = ChatProviderClient(prefs)
 
         # Update connection label after changes
         host = prefs['server_host']
@@ -114,15 +119,30 @@ class MCPServerRechercheDialog(QDialog):
             self.chat_view.append('System: MCP Server wurde (logisch) gestoppt.')
 
     def send_message(self):
-        """Append user message and stub response to chat view."""
+        """Send message via configured provider."""
+        if self.pending_request:
+            return
         text = self.input_edit.text().strip()
         if not text:
             return
-
         self.chat_view.append(f'Du: {text}')
-        self.chat_view.append(
-            'AI (Stub): Hier wuerde spaeter die Antwort des MCP Servers / AI-Dienstes erscheinen.'
-        )
-        self.chat_view.append('')  # empty line for spacing
-
         self.input_edit.clear()
+        self._toggle_send_state(True)
+        QTimer.singleShot(0, lambda: self._process_chat(text))
+
+    # ------------------------------------------------------------------ chat
+    def _process_chat(self, text: str):
+        try:
+            response = self.chat_client.send_chat(text)
+        except Exception as exc:  # noqa: BLE001
+            self.chat_view.append(f'Fehler: {exc}')
+        else:
+            self.chat_view.append(f'AI: {response or "(leer)"}')
+            self.chat_view.append('')
+        finally:
+            self._toggle_send_state(False)
+
+    def _toggle_send_state(self, busy: bool):
+        self.pending_request = busy
+        self.send_button.setEnabled(not busy)
+        self.send_button.setText('Senden...' if busy else 'Senden')
