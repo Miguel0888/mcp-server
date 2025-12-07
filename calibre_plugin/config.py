@@ -3,7 +3,7 @@
 
 
 __license__   = 'GPL v3'
-__copyright__ = '2011, Kovid Goyal <kovidgoyal.net>'
+__copyright__ = '2025, Miguel Iglesias <https://github.com/Miguel0888/>'
 __docformat__ = 'restructuredtext en'
 
 from qt.core import (

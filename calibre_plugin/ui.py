@@ -17,21 +17,25 @@ from calibre_plugins.mcp_server.controller import MCPServerController
 class MCPServerAction(InterfaceAction):
 
     name = 'MCP Server'
+    action_spec = (_('MCP Server'), None, _('MCP Server starten oder stoppen'), None)
 
     def genesis(self):
         self.controller = MCPServerController()
-        self.menu = QMenu(_('MCP Server'), self.gui)
-        menu_bar = self.gui.menuBar()
-        menu_bar.addMenu(self.menu)
-
         icon = get_icons('images/icon.png', _('MCP Server'))
-        self.toggle_action = QAction(icon, _('MCP Server starten'), self.gui)
-        self.toggle_action.setCheckable(True)
-        self.toggle_action.triggered.connect(self.toggle_server)
-        self.menu.addAction(self.toggle_action)
+
+        self.qaction.setIcon(icon)
+        self.qaction.setCheckable(True)
+        self.qaction.setToolTip(_('Startet oder stoppt den MCP Server'))
+        self.qaction.triggered.connect(self.toggle_server)
+
+        self.menu = QMenu(_('MCP Server'), self.gui)
+        self.menu.setIcon(icon)
+        self.menu.addAction(self.qaction)
+        self.gui.menuBar().addMenu(self.menu)
+
         self.update_toggle()
 
-    def toggle_server(self):
+    def toggle_server(self, checked=False):  # pylint: disable=unused-argument
         try:
             if not self.controller.toggle():
                 return
@@ -46,8 +50,10 @@ class MCPServerAction(InterfaceAction):
 
     def update_toggle(self):
         running = self.controller.is_running
-        self.toggle_action.setChecked(running)
-        self.toggle_action.setText(_('MCP Server stoppen') if running else _('MCP Server starten'))
+        self.qaction.blockSignals(True)
+        self.qaction.setChecked(running)
+        self.qaction.blockSignals(False)
+        self.qaction.setText(_('MCP Server stoppen') if running else _('MCP Server starten'))
 
     def apply_settings(self):
         # Called after preferences change, ensure menu state matches
