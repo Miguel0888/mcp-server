@@ -1,60 +1,72 @@
 #!/usr/bin/env python
 # vim:fileencoding=UTF-8:ts=4:sw=4:sta:et:sts=4:ai
 
-
 __license__   = 'GPL v3'
-__copyright__ = '2011, Kovid Goyal <kovid@kovidgoyal.net>'
+__copyright__ = '2025, Miguel Iglesias'
 __docformat__ = 'restructuredtext en'
 
-from calibre.gui2 import error_dialog, info_dialog
 from calibre.gui2.actions import InterfaceAction
+from calibre.gui2 import error_dialog
 from calibre.utils.localization import _
-from qt.core import QAction, QMenu
+from qt.core import QAction
 
+from calibre_plugins.mcp_server.config import prefs
 from calibre_plugins.mcp_server.controller import MCPServerController
+from calibre_plugins.mcp_server.client_dialog import MCPClientDialog
 
 
 class MCPServerAction(InterfaceAction):
+    """Calibre interface action for MCP server and research dialog."""
 
     name = 'MCP Server'
-    action_spec = (_('MCP Server'), None, _('MCP Server starten oder stoppen'), None)
+
+    action_spec = (
+        _('MCP Recherche'),
+        None,
+        _('MCP WebSocket-Server steuern und Recherche starten'),
+        None,
+    )
 
     def genesis(self):
-        self.controller = MCPServerController()
+        """Create toolbar/menu action and controller."""
+        # Create controller using current Calibre library path as fallback
+        library_path = self.gui.current_db.library_path
+        self.controller = MCPServerController(library_path=library_path, prefs_obj=prefs)
+
+        # Use plugin icon if available
         icon = get_icons('images/icon.png', _('MCP Server'))
 
         self.qaction.setIcon(icon)
-        self.qaction.setCheckable(True)
-        self.qaction.setToolTip(_('Startet oder stoppt den MCP Server'))
-        self.qaction.triggered.connect(self.toggle_server)
+        self.qaction.triggered.connect(self.show_client_dialog)
+        self.qaction.setToolTip(_('Öffnet das MCP-Recherchefenster'))
 
-        self.menu = QMenu(_('MCP Server'), self.gui)
-        self.menu.setIcon(icon)
-        self.menu.addAction(self.qaction)
-        self.gui.menuBar().addMenu(self.menu)
+        # Keep last opened dialog reference
+        self._dialog = None
 
-        self.update_toggle()
-
-    def toggle_server(self, checked=False):  # pylint: disable=unused-argument
+    def show_client_dialog(self):
+        """Open the MCP client dialog window."""
         try:
-            if not self.controller.toggle():
-                return
-        except Exception as exc:
-            error_dialog(self.gui, _('MCP Server'), _('Fehler beim Umschalten des Servers'), det_msg=str(exc), show=True)
-            return
-        if self.controller.is_running:
-            info_dialog(self.gui, _('MCP Server'), _('Server wurde gestartet.'), show=True)
-        else:
-            info_dialog(self.gui, _('MCP Server'), _('Server wurde gestoppt.'), show=True)
-        self.update_toggle()
+            if self._dialog is None:
+                self._dialog = MCPClientDialog(self.gui, self.controller, prefs)
+                self._dialog.finished.connect(self._on_dialog_closed)
 
-    def update_toggle(self):
-        running = self.controller.is_running
-        self.qaction.blockSignals(True)
-        self.qaction.setChecked(running)
-        self.qaction.blockSignals(False)
-        self.qaction.setText(_('MCP Server stoppen') if running else _('MCP Server starten'))
+            self._dialog.show()
+            self._dialog.raise_()
+            self._dialog.activateWindow()
+        except Exception as exc:
+            error_dialog(
+                self.gui,
+                _('MCP Server'),
+                _('Fehler beim Öffnen des MCP-Fensters:\n{0}').format(repr(exc)),
+                show=True,
+            )
+
+    def _on_dialog_closed(self, result):
+        """Reset dialog reference when closed."""
+        self._dialog = None
 
     def apply_settings(self):
-        # Called after preferences change, ensure menu state matches
-        self.update_toggle()
+        """React to preference changes if needed."""
+        # Right now controller reads prefs lazily, so no extra code is required.
+        # Add logic here if behaviour shall change on preference updates.
+        return
