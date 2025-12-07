@@ -15,6 +15,18 @@ from qt.core import (
     QLineEdit,
     QPushButton,
     QFileDialog,
+    QVBoxLayout,
+    QGroupBox,
+    QComboBox,
+    QCheckBox,
+)
+
+from .providers import (
+    ensure_model_prefs,
+    get_selected_model,
+    list_enabled_providers,
+    set_selected_model,
+    describe_provider,
 )
 
 
@@ -27,6 +39,9 @@ prefs.defaults['server_host'] = '127.0.0.1'
 prefs.defaults['server_port'] = '8765'
 prefs.defaults['library_path'] = ''   # Use current calibre library when empty
 prefs.defaults['api_key'] = ''        # Optional AI key (e.g. OpenAI)
+prefs.defaults['models'] = {}
+prefs.defaults['selected_model'] = {}
+ensure_model_prefs(prefs)
 
 
 class MCPServerRechercheConfigWidget(QWidget):
@@ -35,18 +50,23 @@ class MCPServerRechercheConfigWidget(QWidget):
     def __init__(self):
         QWidget.__init__(self)
 
-        layout = QFormLayout(self)
-        self.setLayout(layout)
+        layout = QVBoxLayout(self)
+
+        # Connection settings ------------------------------------------------
+        server_group = QGroupBox(_('MCP Server Einstellungen'), self)
+        server_form = QFormLayout(server_group)
+        server_group.setLayout(server_form)
+        layout.addWidget(server_group)
 
         # Server host
         self.host_edit = QLineEdit(self)
         self.host_edit.setText(prefs['server_host'])
-        layout.addRow(_('Server-Host:'), self.host_edit)
+        server_form.addRow(_('Server-Host:'), self.host_edit)
 
         # Server port
         self.port_edit = QLineEdit(self)
         self.port_edit.setText(prefs['server_port'])
-        layout.addRow(_('Server-Port:'), self.port_edit)
+        server_form.addRow(_('Server-Port:'), self.port_edit)
 
         # Library path + browse button
         lib_row = QHBoxLayout()
@@ -59,24 +79,66 @@ class MCPServerRechercheConfigWidget(QWidget):
         lib_row.addWidget(self.library_edit)
         lib_row.addWidget(browse_btn)
 
-        layout.addRow(_('Calibre-Bibliothek:'), lib_row)
-
-        # API key
-        self.api_key_edit = QLineEdit(self)
-        self.api_key_edit.setText(prefs['api_key'])
-        layout.addRow(_('API Key (z. B. OpenAI):'), self.api_key_edit)
+        server_form.addRow(_('Calibre-Bibliothek:'), lib_row)
 
         # Info label
         info = QLabel(
             _(
                 'Host/Port konfigurieren spaeter den MCP WebSocket-Server.\n'
-                'Der Bibliothekspfad ueberschreibt optional die aktuelle '
-                'Calibre-Bibliothek.\n'
-                'Der API Key wird fuer den AI-Dienst genutzt.'
+                'Der Bibliothekspfad ueberschreibt optional die aktuelle Calibre-Bibliothek.'
             ),
             self,
         )
-        layout.addRow(info)
+        server_form.addRow(info)
+
+        # AI provider settings ----------------------------------------------
+        provider_group = QGroupBox(_('AI Provider'), self)
+        provider_layout = QVBoxLayout(provider_group)
+        layout.addWidget(provider_group)
+
+        self.provider_combo = QComboBox(self)
+        self.provider_combo.currentIndexChanged.connect(self._provider_changed)
+        provider_layout.addWidget(self.provider_combo)
+
+        form = QFormLayout()
+        provider_layout.addLayout(form)
+
+        self.provider_enabled = QCheckBox(_('Provider aktiviert'), self)
+        form.addRow('', self.provider_enabled)
+
+        self.display_name_edit = QLineEdit(self)
+        form.addRow(_('Anzeige-Name:'), self.display_name_edit)
+
+        self.base_url_edit = QLineEdit(self)
+        form.addRow(_('Base URL:'), self.base_url_edit)
+
+        self.endpoint_edit = QLineEdit(self)
+        form.addRow(_('Chat Endpoint:'), self.endpoint_edit)
+
+        self.model_edit = QLineEdit(self)
+        form.addRow(_('Standardmodell:'), self.model_edit)
+
+        self.api_key_edit = QLineEdit(self)
+        self.api_key_edit.setEchoMode(QLineEdit.Password)
+        form.addRow(_('API Key:'), self.api_key_edit)
+
+        self.temperature_edit = QLineEdit(self)
+        form.addRow(_('Temperatur:'), self.temperature_edit)
+
+        selection_row = QHBoxLayout()
+        self.selected_provider_label = QLabel(_('Kein Provider'), self)
+        self.selected_model_label = QLabel('', self)
+        selection_row.addWidget(QLabel(_('Aktiv:'), self))
+        selection_row.addWidget(self.selected_provider_label)
+        selection_row.addSpacing(8)
+        selection_row.addWidget(self.selected_model_label)
+        choose_btn = QPushButton(_('Standard setzen'), self)
+        choose_btn.clicked.connect(self.choose_model)
+        selection_row.addWidget(choose_btn)
+        provider_layout.addLayout(selection_row)
+
+        self._load_providers()
+        self._update_selection_labels()
 
     def choose_library(self):
         """Select calibre library root directory."""
@@ -93,4 +155,69 @@ class MCPServerRechercheConfigWidget(QWidget):
         prefs['server_host'] = self.host_edit.text().strip() or '127.0.0.1'
         prefs['server_port'] = self.port_edit.text().strip() or '8765'
         prefs['library_path'] = self.library_edit.text().strip()
-        prefs['api_key'] = self.api_key_edit.text().strip()
+        self._persist_provider_settings()
+        self._update_selection_labels()
+
+    # ------------------------------------------------------------------ AI helpers
+    def _load_providers(self):
+        self._models = ensure_model_prefs(prefs)
+        self.provider_combo.blockSignals(True)
+        self.provider_combo.clear()
+        for key, cfg in self._models.items():
+            self.provider_combo.addItem(describe_provider(cfg), key)
+        self.provider_combo.blockSignals(False)
+        self._provider_changed(self.provider_combo.currentIndex())
+
+    def _provider_changed(self, index: int):
+        provider_key = self.provider_combo.itemData(index)
+        cfg = self._models.get(provider_key, {})
+        self.provider_enabled.setChecked(bool(cfg.get('enabled')))
+        self.display_name_edit.setText(cfg.get('display_name', ''))
+        self.base_url_edit.setText(cfg.get('base_url', ''))
+        self.endpoint_edit.setText(cfg.get('chat_endpoint', ''))
+        self.model_edit.setText(cfg.get('model', ''))
+        self.api_key_edit.setText(cfg.get('api_key', ''))
+        self.temperature_edit.setText(str(cfg.get('temperature', '')))
+
+    def _persist_provider_settings(self):
+        index = self.provider_combo.currentIndex()
+        provider_key = self.provider_combo.itemData(index)
+        if not provider_key:
+            return
+        cfg = self._models.setdefault(provider_key, {})
+        cfg['enabled'] = self.provider_enabled.isChecked()
+        cfg['display_name'] = self.display_name_edit.text().strip()
+        cfg['base_url'] = self.base_url_edit.text().strip()
+        cfg['chat_endpoint'] = self.endpoint_edit.text().strip()
+        cfg['model'] = self.model_edit.text().strip()
+        cfg['api_key'] = self.api_key_edit.text().strip()
+        try:
+            cfg['temperature'] = float(self.temperature_edit.text().strip())
+        except ValueError:
+            cfg['temperature'] = 0.4
+        prefs['models'] = self._models
+
+    def choose_model(self):
+        models = ensure_model_prefs(prefs)
+        enabled = list_enabled_providers(models)
+        if not enabled:
+            self.selected_provider_label.setText(_('Kein aktiver Provider'))
+            self.selected_model_label.setText('')
+            return
+        key = self.provider_combo.itemData(self.provider_combo.currentIndex())
+        if key not in enabled:
+            key = next(iter(enabled.keys()))
+        model_name = enabled[key].get('model', '')
+        set_selected_model(prefs, key, model_name)
+        self._update_selection_labels()
+
+    def _update_selection_labels(self):
+        selected = get_selected_model(prefs)
+        models = ensure_model_prefs(prefs)
+        cfg = models.get(selected.get('provider'))
+        if not cfg:
+            self.selected_provider_label.setText(_('Kein Provider'))
+            self.selected_model_label.setText('')
+            return
+        self.selected_provider_label.setText(describe_provider(cfg))
+        self.selected_model_label.setText(selected.get('model') or '')
