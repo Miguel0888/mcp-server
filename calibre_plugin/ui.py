@@ -14,19 +14,13 @@ from qt.core import QAction, QMenu
 from calibre_plugins.mcp_server.controller import MCPServerController
 
 
-def get_icons(name, plugin_name):
-    from calibre.gui2 import get_icons as calibre_get_icons
-
-    return calibre_get_icons(name, plugin_name)
-
-
 class MCPServerAction(InterfaceAction):
 
     name = 'MCP Server'
     action_spec = (_('MCP Server'), None, _('MCP Server starten oder stoppen'), None)
 
     def genesis(self):
-        self.controller = MCPServerController(library_path=self._current_library_path())
+        self.controller = MCPServerController()
         icon = get_icons('images/icon.png', _('MCP Server'))
 
         self.qaction.setIcon(icon)
@@ -42,11 +36,6 @@ class MCPServerAction(InterfaceAction):
         self.update_toggle()
 
     def toggle_server(self, checked=False):  # pylint: disable=unused-argument
-        library_path = self._current_library_path()
-        if not library_path:
-            error_dialog(self.gui, _('MCP Server'), _('Calibre-Bibliothek konnte nicht ermittelt werden.'), show=True)
-            return
-        self.controller.set_library_path(library_path)
         try:
             if not self.controller.toggle():
                 return
@@ -69,7 +58,3 @@ class MCPServerAction(InterfaceAction):
     def apply_settings(self):
         # Called after preferences change, ensure menu state matches
         self.update_toggle()
-
-    def _current_library_path(self):
-        db = getattr(self.gui, 'current_db', None)
-        return getattr(db, 'library_path', None) if db is not None else None
