@@ -3,7 +3,7 @@
 
 
 __license__   = 'GPL v3'
-__copyright__ = '2011, Kovid Goyal <kovid@kovidgoyal.net>'
+__copyright__ = '2025, Miguel Iglesias'
 __docformat__ = 'restructuredtext en'
 
 if False:
@@ -14,21 +14,28 @@ if False:
 
 # The class that all interface action plugins must inherit from
 from calibre.gui2.actions import InterfaceAction
-from calibre_plugins.interface_demo.main import DemoDialog
+from calibre_plugins.mcp_server_recherche.main import MCPServerRechercheDialog
 
 
 class MCPServerRechercheAction(InterfaceAction):
+    """Interface action for MCP Server Recherche."""
 
-    name = 'Interface Plugin Demo'
+    name = 'MCP Server Recherche'
 
     # Declare the main action associated with this plugin
     # The keyboard shortcut can be None if you don't want to use a keyboard
     # shortcut. Remember that currently calibre has no central management for
     # keyboard shortcuts, so try to use an unusual/unused shortcut.
-    action_spec = ('Interface Plugin Demo', None,
-            'Run the Interface Plugin Demo', 'Ctrl+Shift+F1')
+    action_spec = (
+        'MCP Server Recherche',
+        None,
+        'MCP Server Recherche-Fenster oeffnen',
+        'Ctrl+Shift+F1',
+    )
 
     def genesis(self):
+        """Initial setup for this interface action."""
+        # Set toolbar/menu icon
         # This method is called once per plugin, do initial setup here
 
         # Set the icon for this interface action
@@ -41,7 +48,7 @@ class MCPServerRechercheAction(InterfaceAction):
         # should pass a list of names to get_icons. In this case, get_icons
         # will return a dictionary mapping names to QIcons. Names that
         # are not found in the zip file will result in null QIcons.
-        icon = get_icons('images/icon.png', 'Interface Demo Plugin')
+        icon = get_icons('images/icon.png', 'MCP Server Recherche')
 
         # The qaction is automatically created from the action_spec defined
         # above
@@ -49,6 +56,7 @@ class MCPServerRechercheAction(InterfaceAction):
         self.qaction.triggered.connect(self.show_dialog)
 
     def show_dialog(self):
+        """Create and show the main MCP dialog."""
         # The base plugin object defined in __init__.py
         base_plugin_object = self.interface_action_base_plugin
         # Show the config dialog
@@ -60,11 +68,14 @@ class MCPServerRechercheAction(InterfaceAction):
         # self.gui is the main calibre GUI. It acts as the gateway to access
         # all the elements of the calibre user interface, it should also be the
         # parent of the dialog
-        d = DemoDialog(self.gui, self.qaction.icon(), do_user_config)
+        d = MCPServerRechercheDialog(self.gui, self.qaction.icon(), do_user_config)
         d.show()
 
     def apply_settings(self):
-        from calibre_plugins.interface_demo.config import prefs
+        """React to settings changes (no special handling needed yet)."""
+        from calibre_plugins.mcp_server_recherche.config import prefs
+
         # In an actual non trivial plugin, you would probably need to
         # do something based on the settings in prefs
+        # Keep reference so linter does not complain
         prefs

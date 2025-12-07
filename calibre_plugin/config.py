@@ -22,9 +22,6 @@ from qt.core import (
 # Name is global, so keep it reasonably unique.
 prefs = JSONConfig('plugins/mcp_server_recherche')
 
-# Old demo default to keep main.py happy
-prefs.defaults['hello_world_msg'] = 'Hello, World!'
-
 # New settings for MCP server / AI
 prefs.defaults['server_host'] = '127.0.0.1'
 prefs.defaults['server_port'] = '8765'
@@ -51,16 +48,16 @@ class MCPServerRechercheConfigWidget(QWidget):
         self.port_edit.setText(prefs['server_port'])
         layout.addRow(_('Server-Port:'), self.port_edit)
 
-        # Library path with browse button
+        # Library path + browse button
         lib_row = QHBoxLayout()
         self.library_edit = QLineEdit(self)
         self.library_edit.setText(prefs['library_path'])
 
-        browse_lib_btn = QPushButton(_('Auswahl'), self)
-        browse_lib_btn.clicked.connect(self.choose_library)
+        browse_btn = QPushButton(_('Auswahl'), self)
+        browse_btn.clicked.connect(self.choose_library)
 
         lib_row.addWidget(self.library_edit)
-        lib_row.addWidget(browse_lib_btn)
+        lib_row.addWidget(browse_btn)
 
         layout.addRow(_('Calibre-Bibliothek:'), lib_row)
 
@@ -82,7 +79,7 @@ class MCPServerRechercheConfigWidget(QWidget):
         layout.addRow(info)
 
     def choose_library(self):
-        """Let user select calibre library root directory."""
+        """Select calibre library root directory."""
         path = QFileDialog.getExistingDirectory(
             self,
             _('Calibre-Bibliothek auswaehlen'),

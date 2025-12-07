@@ -3,7 +3,7 @@
 
 
 __license__   = 'GPL v3'
-__copyright__ = '2011, Kovid Goyal <kovid@kovidgoyal.net>'
+__copyright__ = '2025, Miguel Iglesias'
 __docformat__ = 'restructuredtext en'
 
 # The class that all Interface Action plugin wrappers must inherit from
@@ -30,7 +30,7 @@ class MCPServerRecherchePlugin(InterfaceActionBase):
     #: This field defines the GUI plugin class that contains all the code
     #: that actually does something. Its format is module_path:class_name
     #: The specified class must be defined in the specified module.
-    actual_plugin       = 'calibre_plugins.interface_demo.ui:MCPServerRechercheAction'
+    actual_plugin = 'calibre_plugins.mcp_server_recherche.ui:MCPServerRechercheAction'
 
     def is_customizable(self):
         '''
@@ -61,7 +61,7 @@ class MCPServerRecherchePlugin(InterfaceActionBase):
         # top of the module as importing the config class will also cause the
         # GUI libraries to be loaded, which we do not want when using calibre
         # from the command line
-        from calibre_plugins.interface_demo.config import ConfigWidget
+        from calibre_plugins.mcp_server_recherche.config import MCPServerRechercheConfigWidget
         return MCPServerRechercheConfigWidget()
 
     def save_settings(self, config_widget):
