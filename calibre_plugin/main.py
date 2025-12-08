@@ -683,6 +683,18 @@ class MCPServerRechercheDialog(QDialog):
         self._trace_buffer = []
         self._trace_title = None
         self._current_ai_message = None
+        # Quellenliste und Panel ebenfalls zuruecksetzen, damit alte Treffer
+        # nicht im neuen Chat sichtbar bleiben.
+        self._source_hits = []
+        # Alle Widgets aus dem Quellen-Layout entfernen und einen Stretch
+        # hinzufuegen, damit das Panel leer erscheint.
+        while self.sources_layout.count() > 0:
+            item = self.sources_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self.sources_layout.addStretch(1)
+
         self.agent = RechercheAgent(prefs, trace_callback=self._trace_from_worker)
         self._enqueue_status('Neuer Chat gestartet.')
 
