@@ -628,3 +628,54 @@ class RechercheAgent(object):
                 filtered.append(q)
 
         return filtered[: self.max_query_variants]
+
+    def _extract_keywords(self, text: str) -> List[str]:
+        """Erzeuge eine Schlagwortliste ueber den LLM statt ueber harte Heuristik.
+
+        Die KI erhaelt einen kompakten Prompt und soll nur relevante Begriffe
+        bzw. einfache Suchphrasen (mit Leerzeichen als OR) oder AND/OR-Kombinationen
+        liefern, jeweils eine pro Zeile. Diese Funktion dient als Fallback oder
+        zusaetzliche Quelle, falls _plan_search_queries eine reine Keywordliste
+        benoetigt.
+        """
+        text = (text or "").strip()
+        if not text:
+            return []
+
+        use_llm = bool(self.prefs.get('use_llm_query_planning', True))
+        if not use_llm:
+            # Minimaler heuristischer Fallback, falls kein LLM verfuegbar ist
+            cleaned = re.sub(r"[^\wäöüÄÖÜß]+", " ", text.lower())
+            tokens = [t.strip() for t in cleaned.split() if t.strip()]
+            return tokens[: int(self.prefs.get('max_search_keywords', 5))]
+
+        prompt = (
+            "Du erstellst Schlagwoerter fuer eine Volltextsuche.\n"
+            "Aus der folgenden Frage sollst du nur die wichtigsten Suchbegriffe\n"
+            "und einfachen Suchphrasen extrahieren.\n\n"
+            "Vorgaben:\n"
+            "- Nutze vor allem Fachbegriffe, Titelwoerter und relevante Abkuerzungen.\n"
+            "- Du darfst Leerzeichen als ODER-Operator interpretieren (z. B. 'fahrzeug bussysteme'\n"
+            "  bedeutet: Treffer, die entweder 'fahrzeug' oder 'bussysteme' enthalten).\n"
+            "- Wenn sinnvoll, kannst du auch explizite AND/OR-Operatoren verwenden\n"
+            "  (z. B. 'fahrzeug AND bussysteme', 'CAN OR LIN OR FlexRay').\n"
+            "- Kein Erklaertext, nur eine Liste von Begriffen/Queries, jeweils eine pro Zeile.\n\n"
+            f"Frage:\n{text}\n"
+        )
+
+        try:
+            response = self.chat_client.send_chat(prompt)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("LLM-Schlagwort-Extraktion fehlgeschlagen: %s", exc)
+            return []
+
+        raw = [line.strip() for line in response.splitlines() if line.strip()]
+        max_kws = int(self.prefs.get('max_search_keywords', 5))
+        keywords: List[str] = []
+        for line in raw:
+            if line and line not in keywords:
+                keywords.append(line)
+            if len(keywords) >= max_kws:
+                break
+        return keywords
+
