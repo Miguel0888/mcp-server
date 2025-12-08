@@ -1,60 +1,88 @@
-````markdown
-# Calibre MCP Server
+# Calibre MCP Server & Recherche-Plugin
 
-Ein experimenteller [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol) Server, der auf eine lokale [Calibre](https://calibre-ebook.com/) Bibliothek zugreift. Ziel ist es, KI-Agenten (z. B. ChatGPT, Copilot, Claude Desktop) ein Research-API auf deine E-Book-Sammlung zu geben – inklusive Fulltext-Suche und strukturierten Excerpts.
+Ein experimenteller [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol) Server, der auf eine lokale [Calibre](https://calibre-ebook.com/) Bibliothek zugreift. Ziel ist es, KI-Agenten (z. B. ChatGPT, Copilot, Claude Desktop) ein Research-API auf deine E‑Book‑Sammlung zu geben – inklusive Volltextsuche und strukturierten Excerpts.
 
-Zusätzlich gibt es ein Calibre-GUI-Plugin, das den MCP-Server direkt aus Calibre heraus startet und stoppt.
+Zusätzlich gibt es ein Calibre‑GUI‑Plugin, das
+
+- den MCP‑Server als **WebSocket**-Dienst startet (`ws://127.0.0.1:8765`) und
+- einen **Recherche‑Agenten** bereitstellt, der
+  - Volltext‑Tools des MCP‑Servers verwendet,
+  - Schlagworte per LLM ableitet und
+  - Antworten inkl. Quellen (Titel + ISBN) im Calibre‑Dialog anzeigt.
 
 ---
 
 ## Features (aktueller Stand)
 
-- MCP-Server auf Basis von `fastmcp`
-  - Tool `calibre_fulltext_search`
-  - Tool `calibre_get_excerpt`
-- Zugriff auf Calibre-`metadata.db` via SQLite (read-only)
-  - Volltext-ähnliche Suche über Titel, ISBN und Kommentare (`books` + `comments`)
-  - Auflösen von Büchern über ISBN (inkl. `identifiers`-Tabelle)
+### MCP‑Server
+
+- Implementiert mit [`fastmcp`](https://github.com/modelcontextprotocol/fastmcp)
+- Bietet aktuell zwei Tools an:
+  - `calibre_fulltext_search`
+    - Eingabe: `query: str`, `limit: int`
+    - Liefert Treffer (`book_id`, `title`, `isbn`, `snippet`)
+    - Sucht in `metadata.db` über `books` + `comments` (Titel, ISBN, Kommentare)
+  - `calibre_get_excerpt`
+    - Eingabe: `isbn: str`, `max_chars: int`
+    - Liefert einen kurzen Textausschnitt plus Metadaten (`book_id`, `title`)
 - Domänenschicht `LibraryResearchService` als zentrale API
-- Calibre-GUI-Plugin, das den MCP-Server als Subprozess startet/stoppt
-- Zwei kleine Testskripte zum manuellen Testen gegen eine echte Bibliothek
+- Zugriff auf Calibre‑`metadata.db` via SQLite (read‑only)
+  - ISBN‑Lookup über `identifiers` + Fallback auf `books.isbn`
+
+### Calibre‑Plugin `mcp_server_recherche`
+
+- Startet / stoppt den MCP‑Server über WebSocket (`ws://host:port`)
+- Stellt einen **Recherche‑Dialog** bereit, der
+  - Fragen an einen konfigurierten LLM‑Provider sendet,
+  - automatisch MCP‑Tools für Volltextsuche und Excerpts nutzt,
+  - Suchtreffer und Auszüge anzeigt und
+  - eine strukturierte Antwort mit Quellen (inkl. ISBN) generiert.
+- Unterstützt **Follow‑up‑Fragen**:
+  - Kurze Nachfragen werden mit der vorherigen Frage kombiniert
+    (z. B. „Sag mir mehr zu LIN (im Kontext von: Welche Fahrzeug‑Bussysteme gibt es?)“).
+  - Der Agent sucht erneut in der Bibliothek, nutzt aber den bisherigen Kontext.
+- Debug‑Ausgabe im Dialog (optional), z. B.:
+  - `Suchrunde 1 (Kernbegriffe): ['hacking', 'Sicherheit', ...]`
+  - `Toolcall calibre_fulltext_search: query='hacking', limit=6`
+  - `MCP -> list_tools`, `MCP <- call_tool` usw.
 
 ---
 
-## Repository-Struktur
+## Repository‑Struktur (Kurzüberblick)
 
 Wichtige Verzeichnisse/Dateien:
 
-- `pyproject.toml` – Projekt- und Dependency-Definitionen
-- `src/calibre_mcp_server/` – MCP-Server und Domänencode
-  - `core/models.py` – einfache Domain-Modelle (`FulltextHit`, `Excerpt` …)
-  - `core/service.py` – `LibraryResearchService`, zentrale Research-API
+- `pyproject.toml` – Projekt‑ und Dependency‑Definitionen
+- `src/calibre_mcp_server/` – MCP‑Server und Domänencode
+  - `core/models.py` – einfache Domain‑Modelle (`FulltextHit`, `Excerpt`, ...)
+  - `core/service.py` – `LibraryResearchService`, zentrale Research‑API
   - `infra/metadata_sqlite.py` – Zugriff auf `metadata.db` über SQLite
-  - `tools/ft_search_tool.py` – MCP-Tool `calibre_fulltext_search`
-  - `tools/excerpt_tool.py` – MCP-Tool `calibre_get_excerpt`
-  - `main.py` – Einstiegspunkt für den MCP-Server (`python -m calibre_mcp_server.main`)
-- `calibre_plugin/` – Calibre-GUI-Plugin
-  - `__init__.py` – Plugin-Metadaten für Calibre
-  - `action.py` – GUI-Action, startet/stoppt den MCP-Server
-- `tests/` – manuelle Testskripte
-  - `manual_test_service.py` – einfacher End-to-End-Test für den Service
-  - `inspect_metadata_isbn.py` – Debug-Script, das zeigt, wie eine ISBN in `metadata.db` gespeichert ist
-
----
-
-## Voraussetzungen
-
-- Python 3.10+ (getestet mit 3.12)
-- Eine lokale Calibre-Bibliothek
-  - z. B. `X:\E-Books` mit `metadata.db` im Root
-- Entwicklungsabhängigkeiten (werden über `pip` installiert):
-  - `fastmcp`
-  - `pydantic`
-  - plus alles, was in `pyproject.toml` steht
+  - `tools/ft_search_tool.py` – MCP‑Tool `calibre_fulltext_search`
+  - `tools/excerpt_tool.py` – MCP‑Tool `calibre_get_excerpt`
+  - `websocket_server.py` – kleiner WebSocket‑RPC‑Server für MCP‑Calls
+  - `mcp_protocol.py` – einfache MCP‑Request/Response‑Strukturen
+  - `main.py` – Einstiegspunkt für den Server
+- `calibre_plugin/` – Calibre‑GUI‑Plugin
+  - `__init__.py` – Plugin‑Metadaten für Calibre
+  - `config.py` – Plugin‑Einstellungen / UI
+  - `main.py` – Dialog, Recherche‑Agent, Start/Stopp des WebSocket‑Servers
+  - `providers.py` – Konfiguration der LLM‑Provider (OpenAI‑kompatibel, o. Ä.)
+  - `recherche_agent.py` – Orchestrierung von LLM + MCP‑Tools
+  - `ui.py` – Qt‑Dialog und UI‑Logik
+- `tests/`
+  - `inspect_metadata_isbn.py` – Debug‑Script, zeigt ISBN‑Mapping in `metadata.db`
+  - `manual_test_websocket_connectivity.py` – Testet WS‑Server mit einem einfachen Client
 
 ---
 
 ## Installation (Development Setup)
+
+Voraussetzungen:
+
+- Python 3.10+ (getestet mit 3.12)
+- Lokale Calibre‑Bibliothek (mit `metadata.db`)
+
+Setup (Entwicklungsumgebung):
 
 ```bash
 # Repository klonen
@@ -63,219 +91,163 @@ cd mcp-server
 
 # Optional: virtuelles Environment anlegen
 python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# Linux/macOS:
-# source .venv/bin/activate
+.venv\Scripts\activate  # Windows
+# source .venv/bin/activate  # Linux/macOS
 
-# Paket im Editable-Mode installieren (inkl. Dependencies)
+# Paket im Editable‑Mode installieren (inkl. Dependencies)
+python -m pip install --upgrade pip
 python -m pip install -e .
-````
+```
 
-Danach ist das Paket `calibre_mcp_server` im aktiven Python-Interpreter importierbar.
+Danach ist das Paket `calibre_mcp_server` im aktiven Python‑Interpreter verfügbar.
 
 ---
 
-## MCP-Server manuell starten
+## MCP‑Server manuell starten (WebSocket‑Modus)
 
-Voraussetzung: Environment-Variable `CALIBRE_LIBRARY_PATH` muss auf den Root deiner Calibre-Bibliothek zeigen (dort, wo `metadata.db` liegt).
+Der Calibre‑Plugin‑Workflow startet den Server automatisch. Für manuelle Tests kannst du ihn aber auch direkt ausführen.
 
-Beispiel (Windows):
+### 1. Konfiguration über Umgebungsvariablen
+
+Der Server liest die Bibliotheks‑Konfiguration aus `src/calibre_mcp_server/config.py`. Standard: aktuelle Calibre‑Bibliothek oder ein konfigurierten Pfad.
+
+Für einen manuellen Test kannst du z. B. `CALIBRE_LIBRARY_PATH` setzen:
 
 ```bash
 set CALIBRE_LIBRARY_PATH=X:\E-Books
 python -m calibre_mcp_server.main
 ```
 
-Du solltest die FastMCP-Banner-Ausgabe sehen und der Server wartet dann auf MCP-Client-Verbindungen über STDIO.
+Der Server startet dann einen WebSocket‑Endpoint, z. B. `ws://127.0.0.1:8765`, und akzeptiert MCP‑ähnliche Requests (`list_tools`, `call_tool`).
 
-In einer MCP-fähigen IDE / einem MCP-Client (z. B. ChatGPT, Claude Desktop, Copilot Agent Mode) kann dieser Command als MCP-Server registriert werden und die Tools `calibre_fulltext_search` und `calibre_get_excerpt` verwenden.
+### 2. Tools testen (z. B. via WebSocket‑Client oder Testskript)
 
----
+Siehe `tests/manual_test_websocket_connectivity.py` für ein Minimalbeispiel, das:
 
-## Manuelle Tests gegen eine echte Bibliothek
-
-### 1. `tests/manual_test_service.py`
-
-Dieses Script testet die Domänenschicht `LibraryResearchService` direkt – ohne MCP und ohne Calibre-Plugin.
-
-Anpassen in `tests/manual_test_service.py`:
-
-```python
-library_path = r"X:\E-Books"  # Pfad zu deiner Calibre-Bibliothek
-
-# Eine Query, von der du erwartest, dass sie Treffer liefert
-query = "der"
-
-# Eine echte ISBN aus deiner Bibliothek
-test_isbn = "9783446429338"
-```
-
-Ausführen:
-
-```bash
-python tests\manual_test_service.py
-```
-
-Erwartetes Verhalten:
-
-* `fulltext_search` gibt eine Liste von Treffern (`FulltextHit`) mit `book_id`, `title`, `isbn` (falls vorhanden) und einem kurzen Snippet aus Kommentaren/Titel zurück.
-* `get_excerpt_by_isbn` findet das Buch zu `test_isbn` über die `identifiers`-Tabelle und gibt einen einfachen Excerpt zurück (aktuell aus `comments` oder – wenn leer – dem Titel).
-
-### 2. `tests/inspect_metadata_isbn.py`
-
-Dieses Script hilft beim Debuggen von ISBN-Mapping und zeigt, wie Calibre die Daten in `metadata.db` speichert.
-
-Konfiguration im Script:
-
-```python
-library_root = r"X:\E-Books"
-# Default-ISBN (kann per CLI-Argument überschrieben werden)
-raw_isbn = "9783446429338"
-```
-
-Ausführen ohne Argument (nutzt die Default-ISBN):
-
-```bash
-python tests\inspect_metadata_isbn.py
-```
-
-Oder mit einer anderen ISBN:
-
-```bash
-python tests\inspect_metadata_isbn.py 9781484265611
-```
-
-Das Script zeigt u. a.:
-
-* Schema von `books` und `identifiers`
-* alle Zeilen in `books.isbn`, die zur normalisierten ISBN passen
-* alle Zeilen in `identifiers.val`, die passen (inkl. `book`-ID und Typ)
-* zugehörige Bücher inkl. Kommentaren (falls vorhanden)
+- eine Verbindung zu `ws://127.0.0.1:8765` herstellt,
+- `list_tools` sendet und
+- anschließend `call_tool` für `calibre_fulltext_search` ausführt.
 
 ---
 
-## Calibre-GUI-Plugin
+## Calibre‑Plugin: Installation & Konfiguration
 
-Im Ordner `calibre_plugin/` liegt ein einfaches GUI-Plugin, mit dem du den MCP-Server direkt aus Calibre heraus starten und stoppen kannst.
+### Plugin‑ZIP bauen (falls nicht über GitHub Release bezogen)
 
-### Aufbau
-
-* `calibre_plugin/__init__.py`
-
-  * beschreibt das Plugin für Calibre (Name, Version, min. Calibre-Version, etc.)
-  * verweist mit `actual_plugin = "action:McpInterfaceAction"` auf die Implementierung
-* `calibre_plugin/action.py`
-
-  * definiert `McpInterfaceAction` (Unterklasse von `InterfaceAction`)
-  * fügt eine Toolbar-/Menü-Aktion "MCP Server" hinzu
-  * beim Klick: Start/Stopp eines Subprozesses mit `python -m calibre_mcp_server.main`
-  * setzt `CALIBRE_LIBRARY_PATH` automatisch auf die aktuell geöffnete Bibliothek (`self.gui.current_db.library_path`)
-
-### Manuell ein Plugin-ZIP bauen
-
-Im Projekt-Root:
+Im Projekt‑Root:
 
 ```bash
-mkdir -p dist
+mkdir dist
 cd calibre_plugin
 zip -r ..\dist\calibre-mcp-plugin.zip .
 ```
 
-Die ZIP-Datei `dist/calibre-mcp-plugin.zip` enthält dann direkt `__init__.py` und `action.py` (genau so erwartet Calibre das).
+Die ZIP‑Datei `dist/calibre-mcp-plugin.zip` enthält dann die Plugin‑Dateien im Root, wie Calibre es erwartet.
 
 ### Plugin in Calibre installieren
 
 1. Calibre öffnen
 2. Einstellungen → Plugins → "Plugin aus Datei laden"
-3. `calibre-mcp-plugin.zip` auswählen
+3. `dist/calibre-mcp-plugin.zip` auswählen
 4. Calibre neu starten
 
-Danach sollte in der Toolbar oder im Menü ein Eintrag "MCP Server" vorhanden sein.
+Danach erscheint das Plugin (z. B. "MCP‑Recherche") im Menü / der Toolbar.
 
-* Erster Klick → startet den MCP-Server (externes `python`), setzt `CALIBRE_LIBRARY_PATH`
-* Zweiter Klick → beendet den Serverprozess
+### Wichtige Einstellungen im Plugin
 
-Wichtig: In der Python-Umgebung, die Calibre für `python` nutzt, muss das Paket `calibre_mcp_server` installiert sein, z. B.:
+Im Plugin‑Dialog (`Einstellungen → Plugins → MCP Server Recherche → Konfigurieren`):
 
-```bash
-python -m pip install -e .
-```
-
-(ggf. mit dem Python, das in PATH liegt oder explizit in `action.py` konfiguriert wird.)
+- **MCP Server Einstellungen**
+  - `Server-Host` (Default: `127.0.0.1`)
+  - `Server-Port` (Default: `8765`)
+  - `Calibre-Bibliothek` (optional fester Pfad; sonst aktive Bibliothek verwenden)
+  - Optional: Python‑Interpreter für den MCP‑Server (falls nicht der globale genutzt werden soll)
+- **Recherche‑Feintuning**
+  - `max_query_variants` – Wie viele Varianten an Suchqueries pro Runde maximal genutzt werden.
+  - `max_hits_per_query` – Limit für Treffer pro Query.
+  - `max_hits_total` – Globales Limit an Treffern, die in den Kontext übernommen werden.
+  - `target_sources` – Wie viele unterschiedliche Quellen (Bücher) der Agent mindestens finden soll.
+  - `max_excerpts` / `max_excerpt_chars` – Anzahl und Länge der Excerpts.
+  - `min_hits_required` – Mindestanzahl an Treffern, bevor die Suche beendet wird.
+  - `max_search_rounds` – Wie viele Suchrunden der Agent maximal macht (z. B. 2: einfache Keywords + Refinement).
+  - `context_influence` – Wie stark vorherige Fragen den Kontext neuer Nachfragen beeinflussen (0–100).
+- **Prompt‑Hints**
+  - `Hinweis für Query-Planer-Prompt` (`query_planner_hint`)
+    - Zusatztext, den du der KI geben kannst, um die Art der Suchqueries zu steuern
+      (z. B. „nutze bevorzugt deutsche Fachbegriffe aus der Fahrzeugtechnik“).
+  - `Hinweis für Schlagwort-Prompt` (`keyword_extraction_hint`)
+    - Feintuning für die Keyword‑Extraktion, z. B. „nutze zunächst breite Begriffe ohne AND, keine langen UND‑Ketten“.
+  - `Hinweis für Antwort-Prompt` (`answer_style_hint`)
+    - Ergänze, wie die Antworten formuliert werden sollen (z. B. „erkläre auf Bachelor‑Niveau“).
+- **Suchmodus**
+  - `LLM für Query-Planung verwenden` – Schaltet die LLM‑gestützte Schlagwort‑/Query‑Planung ein/aus.
+  - `Max. Schlagwörter pro Suche` (`max_search_keywords`)
+  - `Verknüpfung (AND/OR)` (`keyword_boolean_operator`) – wird vor allem für klassische, heuristische Queries genutzt.
 
 ---
 
-## GitHub Actions: automatischer Build & Release des Plugins
+## Wie der Recherche‑Agent arbeitet (High‑Level)
 
-Lege die Datei `.github/workflows/release.yml` an mit:
+Der Kern der Logik steckt in `calibre_plugin/recherche_agent.py`:
 
-```yaml
-name: Release Calibre MCP Server
+1. **Frage normalisieren**
+   - Leere Eingaben werden ignoriert.
+   - Kurze Nachfragen werden mit der vorherigen Frage kombiniert, um Kontext zu erhalten.
 
-on:
-  push:
-    tags:
-      - 'v*'
+2. **Suchrunden ausführen**
+   - Runde 1:
+     - `_extract_keywords` (LLM) erzeugt eine Wortliste / einfache Phrasen.
+     - Wenn es nur eine Liste ist (z. B. "hacking cyberangriffe sicherheit …"),
+       werden die Wörter gesplittet und **einzeln** als Queries ausgeführt (`hacking`, `Sicherheit`, ...).
+       → Effektiv eine OR‑Suche über die einzelnen Begriffe.
+     - Wenn mehrere Phrasen zurückkommen, wird jede als eigene Query verwendet.
+   - Runde 2+ (optional, bis `max_search_rounds`):
+     - `_refine_search_queries` nutzt den LLM, um auf Basis bisheriger Treffer
+       alternative oder verfeinerte Suchqueries zu erzeugen.
+     - Die Ergebnisse werden mit den bisherigen Treffern zusammengeführt und dedupliziert.
 
-jobs:
-  build-and-release:
-    runs-on: ubuntu-latest
+3. **Treffer mit Excerpts anreichern**
+   - Für eine begrenzte Anzahl an Treffern mit ISBN ruft der Agent `calibre_get_excerpt` auf,
+     um kurze Textausschnitte (z. B. aus Kommentaren) zu laden.
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+4. **Prompt bauen & LLM‑Antwort holen**
+   - Der Agent baut einen Markdown‑Prompt mit drei Teilen:
+     1. Kurze Zusammenfassung
+     2. Relevante Bücher mit Kurznotizen und ISBN
+     3. Ausführliche Beantwortung der Frage
+   - Der LLM‑Provider wird über `ChatProviderClient` angesprochen.
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+5. **Antwort im Dialog anzeigen**
+   - Der Dialog zeigt die Antwort (Markdown) und optional das Debug‑Log der Tool‑Nutzung.
 
-      - name: Install package (editable)
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e .
+---
 
-      - name: Smoke test (compile sources)
-        run: |
-          python -m compileall src
+## Debugging & Tests
 
-      - name: Build Calibre plugin zip
-        run: |
-          mkdir -p dist
-          cd calibre_plugin
-          zip -r ../dist/calibre-mcp-plugin.zip .
+- **FT‑Suche direkt testen**
+  - `src/calibre_mcp_server/tools/ft_search_tool.py` nutzt `LibraryResearchService.fulltext_search`.
+  - Manuelle Tests kannst du mit einem einfachen WebSocket‑Client oder dem Testskript durchführen.
+- **ISBN‑Mapping prüfen**
+  - `tests/inspect_metadata_isbn.py` hilft zu verstehen, wie Calibre ISBNs in `books` und `identifiers` ablegt.
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/calibre-mcp-plugin.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
-
-Was der Workflow tut:
-
-1. Läuft bei `push` auf Tags, die mit `v` beginnen (z. B. `v0.1.0`).
-2. Checkt das Repo aus.
-3. Installiert dein Paket im Editable-Mode.
-4. Führt einen kleinen Smoke-Test aus (`compileall`).
-5. Baut `dist/calibre-mcp-plugin.zip` aus dem Ordner `calibre_plugin`.
-6. Erzeugt (falls nötig) einen GitHub Release zum Tag und hängt das ZIP als Asset an.
-
-### Release auslösen
-
-Im Repo-Root:
+Beispielaufruf:
 
 ```bash
-# Version bump + commit (optional)
-git commit -am "Bump version to v0.1.0"
-
-# Tag erstellen
-git tag v0.1.0
-
-# Tag pushen
-git push origin v0.1.0
+python tests\inspect_metadata_isbn.py 9783658024192
 ```
 
-Danach solltest du im GitHub-UI unter „Actions“ den Workflow sehen und unter „Releases“ dann den neuen Release mit angehängter `calibre-mcp-plugin.zip`.
+---
+
+## Roadmap / Ideen
+
+- Weitere MCP‑Tools, z. B. für
+  - Schlagwort‑Suche (Tags, Serien)
+  - Autorensuche
+  - Volltextsuche über den tatsächlichen Buchinhalt (sofern indiziert)
+- Bessere Unterstützung für Streaming‑Antworten im Calibre‑Dialog
+- Konfigurierbare Anzeige von Tool‑Traces (Debugpanel ein-/ausblendbar)
+- Erweiterte Mehrphasen‑Strategien für den Recherche‑Agenten (z. B. mehr als 2 Suchrunden, gewichtete Treffer)
+
+---
+
+Dieses Projekt ist experimentell – Feedback, Issues und Pull Requests sind willkommen.
