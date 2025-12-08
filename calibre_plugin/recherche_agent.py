@@ -582,6 +582,149 @@ class RechercheAgent(object):
     # Schlagwort-Extraktion (ein- und mehrsprachig)
     # ------------------------------------------------------------------
 
+    def _extract_secondary_keywords_en(self, primary_kws: list[str]) -> list[str]:
+        """Erzeuge englische Suchschlagworte fuer die Zweitsprache per LLM.
+
+        Implementiert die vom PO beschriebene Logik:
+        - erklaert der KI die Suchsemantik (Leerzeichen = OR, nur AND/OR, kein NOT)
+        - bittet explizit um englische Fachbegriffe fuer Buchtitel/Untertitel
+        - erwartet ein JSON-Objekt mit Listen high_specificity_queries und
+          disambiguation_queries
+        - filtert anschliessend generische und mehrdeutige Begriffe robust heraus.
+        """
+        if not primary_kws:
+            return []
+
+        max_kws = int(self._pref_value("max_search_keywords", 8))
+
+        # Systemteil: Suchsemantik und Ziel erklaeren
+        system_block = (
+            "Du erzeugst englische Suchbegriffe fuer eine Volltextsuche ueber Buchtitel, "
+            "Untertitel und Beschreibungen in einer technischen Fachbibliothek.\n"
+            "Die Suchmaschine arbeitet mit folgender Semantik:\n"
+            "- Leerzeichen trennen Tokens; standardmaessig gilt zwischen Tokens OR.\n"
+            "  Beispiel: 'CAN bus automotive' bedeutet 'CAN OR bus OR automotive'.\n"
+            "- Es gibt die booleschen Operatoren AND und OR als Woerter.\n"
+            "  'A AND B' bedeutet: beide Begriffe muessen vorkommen.\n"
+            "  'A OR B' bedeutet: mindestens einer der Begriffe.\n"
+            "- NOT gibt es nicht. Verwende KEIN NOT.\n"
+            "- Klammern, Anfuehrungszeichen und Sonderzeichen (+, -, *, ?, etc.) sollen NICHT verwendet werden.\n"
+            "- Jede Suchanfrage ist ein einzelner String, der dieser Logik unterliegt.\n\n"
+            "Optimierungsziel:\n"
+            "- Erzeuge wenige, praezise, fachliche englische Begriffe, mit denen sich englische "
+            "Fach- und Lehrbuecher finden lassen.\n"
+            "- Bevorzuge spezifische Fachtermini, Protokollnamen und typische Ausdruecke, wie sie "
+            "in englischen Buchtiteln vorkommen.\n"
+            "- Vermeide generische, haeufige Einzelwoerter wie 'system', 'data', 'information',\n"
+            "  'business', 'design', 'analysis', 'control', sofern sie nicht Teil einer klaren,\n"
+            "  domanenspezifischen Phrase sind.\n"
+            "- Begriffe wie 'can', 'most', 'bus' sind stark mehrdeutig und sollen nicht alleine "
+            "als Suchbegriff auftreten. Wenn sie verwendet werden muessen, dann nur in Kombination\n"
+            "  mit sehr spezifischen Kontextbegriffen und vorzugsweise mit AND.\n\n"
+            "Formatvorgaben:\n"
+            "- Kein Erklaertext, keine Kommentare, nur ein JSON-Objekt.\n"
+            "- Verwende KEINE Klammern in den Suchstrings, KEINE Anfuehrungszeichen,\n"
+            "  KEIN NOT und keine Sonderzeichen (+, -, *, ?, ~, etc.).\n"
+            f"- Verwende OR moeglichst gar nicht, Leerzeichen genuegen als OR. AND nur, wenn es zur Disambiguierung unbedingt noetig ist.\n"
+            f"- Gib maximal {max_kws} insgesamt sinnvolle Suchphrasen zurueck.\n\n"
+            "Ausgabeformat (JSON):\n"
+            "{\n"
+            "  \"high_specificity_queries\": [\n"
+            "    \"...\"\n"
+            "  ],\n"
+            "  \"disambiguation_queries\": [\n"
+            "    \"...\"\n"
+            "  ]\n"
+            "}\n"
+            "- high_specificity_queries: Begriffe, die alleine schon relativ spezifisch sind,\n"
+            "  z.B. 'in-vehicle networks', 'automotive ethernet', 'flexray bus', 'lin bus'.\n"
+            "- disambiguation_queries: seltene Faelle, in denen ein mehrdeutiger Begriff\n"
+            "  verwendet werden muss; hier sind Kombinationen mit AND erlaubt (z.B.\n"
+            "  'CAN AND FlexRay', nicht aber 'CAN AND bus').\n\n"
+        )
+
+        # Userteil: deutsche Stichworte und Kontext uebergeben
+        user_block = (
+            "Eingangssprache der folgenden Stichworte ist Deutsch.\n"
+            "Fachgebiet: technische Fachbuecher, insbesondere Automotive, Bussysteme,\n"
+            "Fahrzeugvernetzung und aehnliche Themen, sofern aus den Stichworten ersichtlich.\n\n"
+            f"Deutsche Stichworte: {primary_kws!r}\n\n"
+            "Auftrag:\n"
+            "- Interpretiere die deutschen Stichworte fachlich.\n"
+            "- Bestimme die ueblichen englischen Fachbegriffe, wie sie in Titeln/Untertiteln\n"
+            "  englischer Fachbuecher vorkommen.\n"
+            "- Erzeuge 8-15 kurze, englische Suchphrasen, die domanenspezifisch sind und sich\n"
+            "  gut fuer die oben beschriebene OR-Suche eignen.\n"
+            "- Fuelle das JSON-Objekt gemaess der Vorgaben.\n"
+        )
+
+        prompt = system_block + user_block
+
+        try:
+            raw = self.chat_client.send_chat(prompt)
+        except Exception as exc:
+            log.warning("LLM-englische Schlagwort-Extraktion fehlgeschlagen: %s", exc)
+            return []
+
+        # JSON robust parsen
+        try:
+            data = json.loads(raw)
+        except Exception:
+            # Fallback: Zeilenweise interpretieren, falls kein JSON
+            log.warning("LLM-Output fuer englische Schlagworte war kein gueltiges JSON")
+            lines = [l.strip() for l in raw.splitlines() if l.strip()]
+            candidates = lines
+        else:
+            hs = data.get("high_specificity_queries") or []
+            dis = data.get("disambiguation_queries") or []
+            candidates = []
+            if isinstance(hs, list):
+                candidates.extend(hs)
+            if isinstance(dis, list):
+                candidates.extend(dis)
+
+        # Nachbearbeitung / Filter
+        cleaned: list[str] = []
+        generic_blocklist = {
+            "system", "systems", "data", "information", "business",
+            "design", "analysis", "control", "network", "networks",
+        }
+        bad_tokens = {"NOT"}
+
+        for kw in candidates:
+            if not isinstance(kw, str):
+                continue
+            s = kw.strip()
+            if not s:
+                continue
+            # Sicherheitsfilter gegen NOT und reine Operatoren
+            if "NOT" in s.upper():
+                continue
+            up = s.upper()
+            if up in {"AND", "OR"}:
+                continue
+
+            tokens = [t for t in re.split(r"\s+", s) if t]
+            # sehr lange Phrasen (mehr als 4 Woerter) verwerfen
+            if len(tokens) > 4:
+                continue
+
+            # reine Hilfsverben oder extrem generische Einzelwoerter verwerfen
+            if len(tokens) == 1:
+                t0 = tokens[0].lower()
+                if t0 in {"can", "will", "may", "must", "be", "do", "have", "most", "bus"}:
+                    continue
+                if t0 in generic_blocklist:
+                    continue
+
+            if s not in cleaned:
+                cleaned.append(s)
+            if len(cleaned) >= max_kws:
+                break
+
+        self._trace_log(f"Schlagwoerter (Englisch, LLM): {cleaned!r}")
+        return cleaned
+
     def _extract_keywords_multi(self, text: str) -> tuple[list[str], list[str]]:
         """Liefert (primary_keywords, secondary_keywords).
 
@@ -589,10 +732,9 @@ class RechercheAgent(object):
         - secondary_keywords: Schlagwoerter in der zweiten Sprache, falls
           second_keyword_language_enabled == True.
 
-        Nutzt die bestehende LLM-Logik (send_chat, max_search_keywords,
-        keyword_extraction_hint usw.). Wenn use_llm_query_planning == False,
-        wird ein einfacher heuristischer Fallback fuer die Primärsprache
-        verwendet und die Zweitsprache bleibt leer.
+        Nutzt fuer die Primärsprache weiterhin die bestehende LLM-Logik,
+        fuer die Zweitsprache (standardmaessig Englisch) hingegen den
+        spezialisierten JSON-basierten Keyword-Extractor.
         """
         text = (text or "").strip()
         if not text:
@@ -632,7 +774,7 @@ class RechercheAgent(object):
             try:
                 response = self.chat_client.send_chat(prompt)
             except Exception as exc:
-                log.warning("LLM-Schlagwort-Extraktion fehlgeschlagen: %s", exc)
+                log.warning("LLM-Schlagwort-Extraktion (primaer) fehlgeschlagen: %s", exc)
                 return []
             raw_lines = [line.strip() for line in response.splitlines() if line.strip()]
             out: list[str] = []
@@ -647,90 +789,17 @@ class RechercheAgent(object):
         primary_keywords = _run_llm(base_prompt)
         self._trace_log(f"Schlagwoerter (Hauptsprache): {primary_keywords!r}")
 
-        # Sekundärsprache (optional) mit zusaetzlichen Regeln
+        # Sekundärsprache (optional) ueber spezialisierten englischen Extractor
         secondary_keywords: list[str] = []
         second_enabled = bool(self._pref_value("second_keyword_language_enabled", False))
-        lang_for_trace = None
         if second_enabled:
             lang_for_trace = str(self._pref_value("second_keyword_language", "Englisch") or "Englisch").strip()
-            second_rules = (
-                "Zusätzliche Regeln NUR für die Suchbegriffe in der zweiten Sprache:\n"
-                "- Liefere NUR Suchbegriffe und Suchphrasen, die fachlich typischerweise in dieser Sprache verwendet werden.\n"
-                "- Vermeide generische Wörter wie 'system', 'data', 'information', 'business', 'use', 'example' ohne klaren fachlichen Bezug.\n"
-                "- Gib KEINE einzelnen Wörter zurück, die auch häufige englische Verben oder Funktionswörter sind "
-                "(z. B. 'can', 'will', 'may', 'must', 'be', 'do', 'have').\n"
-                "- Wenn eine sehr kurze Abkürzung fachlich notwendig ist (z. B. 'CAN', 'LIN', 'MOST'), kombiniere sie IMMER mit einem Kontext:\n"
-                "  - entweder als Phrase, z. B. 'CAN bus', 'CAN bus automotive', 'CAN bus networking'\n"
-                "  - oder mit AND, z. B. 'CAN AND vehicle bus systems', 'CAN AND automotive network'.\n"
-                "- Nutze AND nur, um einen Fachbegriff mit einem Kontextbegriff zu verknüpfen. Erzeuge keine langen UND-Ketten.\n"
-                "- Jede Zeile enthält genau EINE Suchphrase.\n"
-                f"- Gib maximal {max_kws} wirklich prägnante Suchphrasen zurück.\n\n"
-            )
-
-            second_prompt = (
-                "Dies ist die gleiche Aufgabe, aber bitte liefere die Suchbegriffe explizit "
-                f"in der Sprache: {lang_for_trace}.\n\n"
-                + second_rules
-                + base_prompt
-            )
-
-            raw_secondary = _run_llm(second_prompt)
-
-            # Simple safeguard fuer Sekundaersprache: reine Hilfsverben entfernen
-            blocklist = {"can", "will", "may", "must", "be", "do", "have"}
-            cleaned_secondary: list[str] = []
-            for kw in raw_secondary:
-                if not kw:
-                    continue
-                tokens = [t for t in kw.split() if t]
-                if len(tokens) == 1 and tokens[0].lower() in blocklist:
-                    # Skip pure helper verb from second language
-                    continue
-                cleaned_secondary.append(kw)
-
-            # Nachbearbeitung: Bus-Kurzformen wie CAN, LIN, FlexRay, MOST, TTP/C
-            # niemals allein oder als nackte OR-Kette verwenden, sondern
-            # immer mit Automotive-Kontext kombinieren.
-            bus_tokens = {"CAN", "LIN", "FLEXRAY", "MOST", "TTP/C"}
-            rewritten_secondary: list[str] = []
-            for kw in cleaned_secondary:
-                tokens_up = [t.strip() for t in re.split(r"\s+", kw) if t.strip()]
-                # Erkenne reine OR-Ketten aus Busnamen, z. B. "CAN OR LIN OR FlexRay"
-                # oder einzelne Busnamen ohne weiteren Kontext.
-                bus_only = True
-                seen_buses: list[str] = []
-                for t in tokens_up:
-                    t_norm = t.upper()
-                    if t_norm in bus_tokens:
-                        if t_norm not in seen_buses:
-                            seen_buses.append(t_norm)
-                    elif t_norm in {"OR", "AND", "(" , ")"}:
-                        continue
-                    else:
-                        bus_only = False
-                        break
-
-                if bus_only and seen_buses:
-                    # Statt der nackten OR-Kette erzeugen wir pro Bus 1–2
-                    # kontextreiche Phrasen.
-                    for b in seen_buses:
-                        # einfache Phrasen-Variante
-                        phrase = f"{b} bus automotive"
-                        if phrase not in rewritten_secondary:
-                            rewritten_secondary.append(phrase)
-                        # UND-Variante mit klarem Fahrzeug-Kontext
-                        and_phrase = f"{b} AND vehicle bus systems"
-                        if and_phrase not in rewritten_secondary:
-                            rewritten_secondary.append(and_phrase)
-                    continue
-
-                # Alles andere unveraendert uebernehmen
-                if kw not in rewritten_secondary:
-                    rewritten_secondary.append(kw)
-
-            secondary_keywords = rewritten_secondary
-
-            self._trace_log(f"Schlagwoerter ({lang_for_trace}): {secondary_keywords!r}")
+            if lang_for_trace.lower().startswith("engl"):
+                secondary_keywords = self._extract_secondary_keywords_en(primary_keywords or [text])
+            else:
+                # Fuer andere Sprachen koennte man spaeter weitere Extractor implementieren;
+                # aktuell loggen wir nur und lassen die Liste leer.
+                self._trace_log(f"Zweitsprache {lang_for_trace!r} wird noch nicht speziell behandelt.")
 
         return primary_keywords, secondary_keywords
 
