@@ -97,61 +97,102 @@ class RechercheAgent(object):
 
             # Mehrstufiger Such-Loop: zuerst eine einfache Kernbegriff-Suche,
             # dann optional KI-verfeinerte Runden.
-            max_rounds = max(1, int(self.prefs.get("max_search_rounds", 2)))
-            min_hits = max(0, int(self.prefs.get("min_hits_required", 3)))
+            max_rounds = int(self._pref_value("max_search_rounds", 3))
+            min_hits = int(self._pref_value("min_hits_before_stop", 3))
+            max_hits_total = int(self._pref_value("max_total_hits", 20))
 
-            all_hits: List[SearchHit] = []
-            all_queries: List[str] = []
+            all_hits: list[SearchHit] = []
+            all_ids: set[tuple[int | None, str | None]] = set()
+            all_queries: list[str] = []
 
             for round_index in range(max_rounds):
                 if round_index == 0:
-                    # Runde 1: einfache Kernbegriffe
-                    core_keywords = self._extract_keywords(effective_question)
-                    if not core_keywords:
-                        core_keywords = [effective_question]
+                    # Runde 1: Keywords fuer Haupt- und Zweitsprache getrennt holen
+                    primary_kws, secondary_kws = self._extract_keywords_multi(effective_question)
+                    if not primary_kws and not secondary_kws:
+                        primary_kws = [effective_question]
 
-                    queries: List[str] = []
-                    if len(core_keywords) == 1:
-                        first = core_keywords[0]
+                    # Queries fuer die Hauptsprache vorbereiten (wie bisherige Logik)
+                    primary_queries: list[str] = []
+                    if len(primary_kws) == 1:
+                        first = primary_kws[0]
                         tokens = [t for t in re.split(r"\s+", first) if t]
                         if len(tokens) > 1:
-                            for tok in tokens:
-                                if tok not in queries:
-                                    queries.append(tok)
+                            primary_queries.append(first)
+                            for t in tokens:
+                                if t not in primary_queries:
+                                    primary_queries.append(t)
                         else:
-                            queries = core_keywords[:]
+                            primary_queries.append(first)
                     else:
-                        queries = [q for q in core_keywords if q]
+                        primary_queries = [q for q in primary_kws if q]
 
-                    self._trace_log(f"Suchrunde 1 (Kernbegriffe): {queries!r}")
+                    # Queries fuer die Sekundaersprache analog vorbereiten
+                    secondary_queries: list[str] = []
+                    if secondary_kws:
+                        if len(secondary_kws) == 1:
+                            first = secondary_kws[0]
+                            tokens = [t for t in re.split(r"\s+", first) if t]
+                            if len(tokens) > 1:
+                                secondary_queries.append(first)
+                                for t in tokens:
+                                    if t not in secondary_queries:
+                                        secondary_queries.append(t)
+                            else:
+                                secondary_queries.append(first)
+                        else:
+                            secondary_queries = [q for q in secondary_kws if q]
+
+                    self._trace_log(f"Suchrunde 1 (Kernbegriffe, Hauptsprache): {primary_queries!r}")
+                    if secondary_queries:
+                        lang_label = str(self._pref_value("second_keyword_language", "Englisch") or "Englisch").strip()
+                        self._trace_log(f"Suchrunde 1b (Kernbegriffe, {lang_label}): {secondary_queries!r}")
+
+                    round_hits: list[SearchHit] = []
+
+                    # Zuerst Hauptsprache durchsuchen
+                    if primary_queries:
+                        hits_primary = self._run_search_plan(primary_queries)
+                        round_hits.extend(hits_primary)
+                        all_queries.extend(primary_queries)
+
+                    # Danach immer auch Zweitsprache (falls konfiguriert/Keywords vorhanden)
+                    if secondary_queries:
+                        hits_secondary = self._run_search_plan(secondary_queries)
+                        round_hits.extend(hits_secondary)
+                        all_queries.extend(secondary_queries)
+
                 else:
-                    refined = self._refine_search_queries(
-                        original_question=question,
-                        effective_question=effective_question,
-                        previous_queries=all_queries,
-                        hits=all_hits,
-                    )
-                    if not refined:
+                    # Bestehende Refinement-Logik bleibt unveraendert
+                    self._trace_log(f"Suchrunde {round_index + 1}: Verfeinerung basierend auf bisherigen Treffern")
+                    followup_query = self._plan_followup_query(question, all_hits)
+                    if not followup_query:
+                        self._trace_log("Keine sinnvolle Folge-Query mehr geplant, breche ab.")
                         break
-                    queries = refined
-                    self._trace_log(f"Suchrunde {round_index+1} (Refinement): {queries!r}")
+                    self._trace_log(f"Folge-Query: {followup_query!r}")
+                    round_hits = self._run_search_plan([followup_query])
+                    all_queries.append(followup_query)
 
-                round_hits = self._run_search_plan(queries)
-                all_queries.extend(queries)
-
-                seen_ids: Set[Tuple[Any, Any]] = set(
-                    (h.book_id, h.isbn) for h in all_hits
-                )
-                new_hits: List[SearchHit] = []
-                for h in round_hits:
-                    ident = (h.book_id, h.isbn)
-                    if ident in seen_ids:
+                # Rundenhits deduplizieren und zu all_hits hinzufuegen
+                new_in_round = 0
+                for hit in round_hits:
+                    key = hit.identity_key()
+                    if key in all_ids:
                         continue
-                    seen_ids.add(ident)
-                    new_hits.append(h)
-                all_hits.extend(new_hits)
+                    all_ids.add(key)
+                    all_hits.append(hit)
+                    new_in_round += 1
+                    if len(all_hits) >= max_hits_total:
+                        self._trace_log("Maximale Gesamtzahl an Treffern erreicht, beende Suche.")
+                        break
 
+                self._trace_log(f"Neue Treffer in Runde {round_index + 1}: {new_in_round}")
+                if len(all_hits) >= max_hits_total:
+                    break
                 if len(all_hits) >= min_hits:
+                    self._trace_log(
+                        f"Ausreichend Treffer gesammelt ({len(all_hits)} >= {min_hits}), breche Suchschleife ab."
+                    )
                     break
 
             if not all_hits:
@@ -531,16 +572,104 @@ class RechercheAgent(object):
             port = 8765
         return (str(host).strip() or "127.0.0.1", port)
 
-    def _pref_value(self, key: str, default: Any) -> Any:
-        getter = getattr(self.prefs, "get", None)
-        if callable(getter):
-            value = getter(key, default)
-        else:
+    def _pref_value(self, key: str, default: Any = None) -> Any:
+        return self.prefs.get(key, default)
+
+    # ------------------------------------------------------------------
+    # Schlagwort-Extraktion (ein- und mehrsprachig)
+    # ------------------------------------------------------------------
+
+    def _extract_keywords_multi(self, text: str) -> tuple[list[str], list[str]]:
+        """Liefert (primary_keywords, secondary_keywords).
+
+        - primary_keywords: Schlagwoerter in der Sprache der Frage
+        - secondary_keywords: Schlagwoerter in der zweiten Sprache, falls
+          second_keyword_language_enabled == True.
+
+        Nutzt die bestehende LLM-Logik (send_chat, max_search_keywords,
+        keyword_extraction_hint usw.). Wenn use_llm_query_planning == False,
+        wird ein einfacher heuristischer Fallback fuer die Primärsprache
+        verwendet und die Zweitsprache bleibt leer.
+        """
+        text = (text or "").strip()
+        if not text:
+            return [], []
+
+        use_llm = bool(self._pref_value("use_llm_query_planning", True))
+        max_kws = int(self._pref_value("max_search_keywords", 5))
+        extra_hint = str(self._pref_value("keyword_extraction_hint", "") or "").strip()
+
+        # Heuristischer Fallback ohne LLM: nur primäre Keywords aus der Frage
+        if not use_llm:
+            cleaned = re.sub(r"[^\wäöüÄÖÜß]+", " ", text.lower())
+            tokens = [t.strip() for t in cleaned.split() if t.strip()]
+            return tokens[:max_kws], []
+
+        hint_block = "" if not extra_hint else (
+            "Zusaetzlicher Hinweis des Benutzers fuer die Schlagwort-Extraktion:\n"
+            f"{extra_hint}\n\n"
+        )
+
+        base_prompt = (
+            "Du erstellst Schlagwoerter fuer eine Volltextsuche.\n"
+            "Aus der folgenden Frage sollst du nur die wichtigsten Suchbegriffe\n"
+            "und einfachen Suchphrasen extrahieren.\n\n"
+            "Vorgaben:\n"
+            "- Bevorzuge kurze Phrasen mit Leerzeichen, z. B. 'fahrzeug bussysteme',\n"
+            "  was einer ODER-Suche ueber beide Begriffe entspricht.\n"
+            "- Verwende AND nur, wenn zwei Begriffe wirklich gemeinsam auftreten muessen,\n"
+            "  z. B. 'penetration testing' AND 'hacking'. Lange UND-Ketten sollen vermieden werden.\n"
+            "- Du darfst OR verwenden, aber halte die Ausdruecke einfach (z. B. 'CAN OR LIN OR FlexRay').\n"
+            "- Kein Erklaertext, keine Saetze, nur eine Liste von Begriffen/Queries,\n"
+            "  jeweils eine pro Zeile.\n\n"
+            f"{hint_block}Frage:\n{text}\n"
+        )
+
+        def _run_llm(prompt: str) -> list[str]:
             try:
-                value = self.prefs[key]
-            except Exception:  # noqa: BLE001
-                value = default
-        return value if value not in (None, "") else default
+                response = self.chat_client.send_chat(prompt)
+            except Exception as exc:
+                log.warning("LLM-Schlagwort-Extraktion fehlgeschlagen: %s", exc)
+                return []
+            raw_lines = [line.strip() for line in response.splitlines() if line.strip()]
+            out: list[str] = []
+            for line in raw_lines:
+                if line and line not in out:
+                    out.append(line)
+                if len(out) >= max_kws:
+                    break
+            return out
+
+        # Primärsprache
+        primary_keywords = _run_llm(base_prompt)
+        self._trace_log(f"Schlagwoerter (Hauptsprache): {primary_keywords!r}")
+
+        # Sekundärsprache (optional)
+        secondary_keywords: list[str] = []
+        second_enabled = bool(self._pref_value("second_keyword_language_enabled", False))
+        if second_enabled:
+            lang = str(self._pref_value("second_keyword_language", "Englisch") or "Englisch").strip()
+            second_prompt = (
+                "Dies ist die gleiche Aufgabe, aber bitte liefere die Suchbegriffe explizit "
+                f"in der Sprache: {lang}.\n\n" + base_prompt
+            )
+            secondary_keywords = _run_llm(second_prompt)
+            self._trace_log(f"Schlagwoerter ({lang}): {secondary_keywords!r}")
+
+        return primary_keywords, secondary_keywords
+
+    def _extract_keywords(self, text: str) -> list[str]:
+        """Rueckwaertskompatible Einsprach-Variante.
+
+        Fuer aeltere Aufrufer liefern wir eine gemergte Liste aus primaeren
+        und (falls konfiguriert) sekundaeren Keywords zurueck.
+        """
+        primary, secondary = self._extract_keywords_multi(text)
+        merged: list[str] = []
+        for kw in primary + secondary:
+            if kw and kw not in merged:
+                merged.append(kw)
+        return merged
 
     # ------------------ Prompt construction & LLM ------------------
 
@@ -675,29 +804,32 @@ class RechercheAgent(object):
 
         return filtered[: self.max_query_variants]
 
-    def _extract_keywords(self, text: str) -> List[str]:
-        """Erzeuge eine Schlagwortliste ueber den LLM statt ueber harte Heuristik.
+    def _extract_keywords_multi(self, text: str) -> tuple[list[str], list[str]]:
+        """Liefert (primary_keywords, secondary_keywords).
 
-        Die KI erhaelt einen kompakten Prompt und soll nur relevante Begriffe
-        bzw. einfache Suchphrasen liefern, bevorzugt mit Leerzeichen (OR-Effekt).
-        AND soll nur sparsam eingesetzt werden, wenn ein einzelner Begriff
-        allein zu unscharf waere. Jede Zeile ist eine eigene Suchphrase.
-        Optional kann ein zweiter Lauf in einer anderen Sprache erfolgen,
-        um z. B. englische Fachbegriffe fuer eine deutschsprachige Frage
-        zu generieren.
+        - primary_keywords: Schlagwoerter in der Sprache der Frage
+        - secondary_keywords: Schlagwoerter in der zweiten Sprache, falls
+          second_keyword_language_enabled == True.
+
+        Nutzt die bestehende LLM-Logik (send_chat, max_search_keywords,
+        keyword_extraction_hint usw.). Wenn use_llm_query_planning == False,
+        wird ein einfacher heuristischer Fallback fuer die Primärsprache
+        verwendet und die Zweitsprache bleibt leer.
         """
         text = (text or "").strip()
         if not text:
-            return []
+            return [], []
 
-        use_llm = bool(self.prefs.get('use_llm_query_planning', True))
+        use_llm = bool(self._pref_value("use_llm_query_planning", True))
+        max_kws = int(self._pref_value("max_search_keywords", 5))
+        extra_hint = str(self._pref_value("keyword_extraction_hint", "") or "").strip()
+
+        # Heuristischer Fallback ohne LLM: nur primäre Keywords aus der Frage
         if not use_llm:
-            # Minimaler heuristischer Fallback, falls kein LLM verfuegbar ist
             cleaned = re.sub(r"[^\wäöüÄÖÜß]+", " ", text.lower())
             tokens = [t.strip() for t in cleaned.split() if t.strip()]
-            return tokens[: int(self.prefs.get('max_search_keywords', 5))]
+            return tokens[:max_kws], []
 
-        extra_hint = str(self._pref_value('keyword_extraction_hint', '') or '').strip()
         hint_block = "" if not extra_hint else (
             "Zusaetzlicher Hinweis des Benutzers fuer die Schlagwort-Extraktion:\n"
             f"{extra_hint}\n\n"
@@ -718,15 +850,14 @@ class RechercheAgent(object):
             f"{hint_block}Frage:\n{text}\n"
         )
 
-        def _run_llm(prompt: str) -> List[str]:
+        def _run_llm(prompt: str) -> list[str]:
             try:
                 response = self.chat_client.send_chat(prompt)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 log.warning("LLM-Schlagwort-Extraktion fehlgeschlagen: %s", exc)
                 return []
             raw_lines = [line.strip() for line in response.splitlines() if line.strip()]
-            max_kws = int(self.prefs.get('max_search_keywords', 5))
-            out: List[str] = []
+            out: list[str] = []
             for line in raw_lines:
                 if line and line not in out:
                     out.append(line)
@@ -734,21 +865,166 @@ class RechercheAgent(object):
                     break
             return out
 
-        # Erster Lauf: Schlagwoerter in der Sprache der Frage
-        keywords = _run_llm(base_prompt)
+        # Primärsprache
+        primary_keywords = _run_llm(base_prompt)
+        self._trace_log(f"Schlagwoerter (Hauptsprache): {primary_keywords!r}")
 
-        # Optionaler zweiter Lauf in anderer Sprache (z. B. Englisch)
-        second_enabled = bool(self._pref_value('second_keyword_language_enabled', False))
+        # Sekundärsprache (optional)
+        secondary_keywords: list[str] = []
+        second_enabled = bool(self._pref_value("second_keyword_language_enabled", False))
         if second_enabled:
-            lang = str(self._pref_value('second_keyword_language', 'Englisch') or 'Englisch').strip()
+            lang = str(self._pref_value("second_keyword_language", "Englisch") or "Englisch").strip()
             second_prompt = (
                 "Dies ist die gleiche Aufgabe, aber bitte liefere die Suchbegriffe explizit "
                 f"in der Sprache: {lang}.\n\n" + base_prompt
             )
-            second_keywords = _run_llm(second_prompt)
-            for kw in second_keywords:
-                if kw not in keywords:
-                    keywords.append(kw)
+            secondary_keywords = _run_llm(second_prompt)
+            self._trace_log(f"Schlagwoerter ({lang}): {secondary_keywords!r}")
 
-        return keywords
+        return primary_keywords, secondary_keywords
 
+    def _extract_keywords(self, text: str) -> list[str]:
+        """Rueckwaertskompatible Einsprach-Variante.
+
+        Fuer aeltere Aufrufer liefern wir eine gemergte Liste aus primaeren
+        und (falls konfiguriert) sekundaeren Keywords zurueck.
+        """
+        primary, secondary = self._extract_keywords_multi(text)
+        merged: list[str] = []
+        for kw in primary + secondary:
+            if kw and kw not in merged:
+                merged.append(kw)
+        return merged
+
+    # ------------------ Prompt construction & LLM ------------------
+
+    def _build_prompt(self, question: str, hits: List[EnrichedHit]) -> str:
+        if not hits:
+            context_block = "Keine passenden Treffer gefunden."
+        else:
+            lines: List[str] = ["Suchtreffer und Auszuege:"]
+            for idx, enriched in enumerate(hits[: self.context_hit_limit], start=1):
+                hit = enriched.hit
+                title = hit.title or "Unbekannter Titel"
+                isbn = hit.isbn or "Unbekannt"
+                lines.append(f"[{idx}] {title} (ISBN: {isbn})")
+
+                snippet = self._trim_text(hit.snippet)
+                if snippet:
+                    lines.append(f"Snippet: {snippet}")
+
+                excerpt = self._trim_text(enriched.excerpt_text)
+                if excerpt:
+                    lines.append(f"Excerpt: {excerpt}")
+
+                if hit.origin_query:
+                    lines.append(f"Suchbegriff: {hit.origin_query}")
+
+                lines.append("")
+            context_block = "\n".join(lines)
+
+        extra_answer_hint = str(self._pref_value('answer_style_hint', '') or '').strip()
+        hint_line = "" if not extra_answer_hint else (
+            "Zusaetzlicher Stil-/Inhalts-Hinweis des Benutzers fuer die Antwort:\n"
+            f"{extra_answer_hint}\n\n"
+        )
+
+        prompt = (
+            "Du bist ein Recherche-Assistent fuer eine Calibre-Bibliothek.\n"
+            "Nutze ausschliesslich den Kontext unten, antworte in sachlichem Deutsch\n"
+            "und verweise auf Quellen als [Nr] mit ISBN.\n"
+            "Wenn fuer ein Buch keine ISBN im Kontext steht, schreibe 'ISBN: unbekannt',\n"
+            "aber mache daraus keine eigenen offenen Punkte.\n"
+            "Trenne klar zwischen Wissen aus den Treffern und allgemeinem Hintergrundwissen,\n"
+            "das du nur sparsam und deutlich gekennzeichnet einsetzen sollst.\n\n"
+            f"{hint_line}"
+            f"FRAGE:\n{question}\n\n"
+            f"KONTEXT AUS DER BIBLIOTHEK:\n{context_block}\n\n"
+            "Strukturiere deine Antwort in genau drei Teilen:\n"
+            "### (1) Kurze Zusammenfassung\n"
+            "- Eine kompakte, 3–5 Saetze lange Einfuehrung, was die Quellen zur Frage aussagen.\n\n"
+            "### (2) Relevante Buecher mit Kurznotizen\n"
+            "- Liste die wichtigsten Quellen als Aufzaehlung mit Titel und sehr kurzer Einordnung.\n"
+            "- Verweise dabei immer mit [Nr] und ISBN, wenn verfuegbar.\n\n"
+            "### (3) Ausfuehrliche Beantwortung der Frage\n"
+            "- Gib hier die eigentliche, zusammenhaengende Antwort auf die Nutzerfrage.\n"
+            "- Erklaere Fachbegriffe, ordne Technologien ein und nenne typische Beispiele.\n"
+            "- Verweise an passenden Stellen auf Quellen (z. B. [1], [3]).\n"
+            "- Nenne hier keine organisatorischen offenen Punkte (z. B. fehlende ISBNs\n"
+            "  oder weitere Rechercheschritte), sondern fokussiere dich auf die fachliche Antwort.\n"
+        )
+        return prompt
+
+    def _ask_llm(self, prompt: str) -> str:
+        return self.chat_client.send_chat(prompt)
+
+    @staticmethod
+    def _trim_text(text: Any, limit: int = 600) -> str:
+        if not text:
+            return ""
+        cleaned = str(text).strip().replace("\n", " ")
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[: limit - 3] + "..."
+
+    def _refine_search_queries(
+        self,
+        original_question: str,
+        effective_question: str,
+        previous_queries: List[str],
+        hits: List[SearchHit],
+    ) -> List[str]:
+        """Nutze den LLM, um auf Basis bisheriger Ergebnisse bessere FT-Queries zu erzeugen."""
+        # Kontextblock fuer den LLM bauen
+        lines: List[str] = []
+        lines.append("Frage des Nutzers:")
+        lines.append(original_question)
+        lines.append("")
+
+        if self._last_question and self.context_influence > 0:
+            lines.append("Vorherige Frage im Dialog:")
+            lines.append(self._last_question)
+            lines.append("")
+
+        lines.append("Bisher verwendete Volltext-Suchabfragen:")
+        for q in previous_queries:
+            lines.append(f"- {q!r}")
+        lines.append("")
+
+        if hits:
+            lines.append("Ausschnitt der bisherigen Treffer (Titel + Snippets):")
+            for h in hits[:3]:
+                lines.append(f"* {h.title or 'Unbekannt'} (ISBN: {h.isbn or 'Unbekannt'})")
+                lines.append(f"  Snippet: {self._trim_text(h.snippet)}")
+            lines.append("")
+
+        instruction = (
+            "Auf Basis der obigen Information:\n"
+            "- Formuliere bis zu drei neue, alternative Suchabfragen fuer eine Volltextsuche "
+            "in einer technischen Fachbibliothek.\n"
+            "- Nutze vor allem zentrale Fachbegriffe aus der Fahrzeugtechnik und Bussystemen, "
+            "z. B. bekannte Protokolle oder Abkuerzungen (CAN, LIN, FlexRay, MOST etc.).\n"
+            "- Die Queries muessen in der Calibre-Suchsprache mit einfachen Begriffen, AND/OR "
+            "oder Begriffskombinationen stehen (z. B. 'lin AND fahrzeugbus' oder 'local interconnect network').\n"
+            "- Gib jede Suchabfrage in einer eigenen Zeile aus, ohne Erklaertext."
+        )
+
+        prompt = "\n".join(lines) + "\n" + instruction
+
+        try:
+            llm_response = self.chat_client.send_chat(prompt)
+            new_queries = self._extract_queries(llm_response)
+        except Exception as exc:
+            log.warning("LLM-Refinement fehlgeschlagen: %s", exc)
+            return []
+
+        # Doppelte und identische Queries herausfiltern
+        filtered: List[str] = []
+        prev_set = set(previous_queries)
+        for q in new_queries:
+            if q in prev_set:
+                continue
+            if q not in filtered:
+                filtered.append(q)
+
+        return filtered[: self.max_query_variants]
