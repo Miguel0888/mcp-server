@@ -80,11 +80,12 @@ class RechercheAgent(object):
         """Vollständigen Recherche-Workflow ausführen und LLM-Antwort zurückgeben.
 
         Workflow:
-        1. Suchqueries planen (LLM-gestützt oder Fallback: Originalfrage)
-        2. Volltextsuche via MCP-Tools ausführen und Treffer sammeln
-        3. Ausgewählte Treffer mit Excerpts anreichern
-        4. Prompt auf Basis der Treffer bauen
-        5. LLM mit dem Prompt abfragen
+        1. Mehrstufige Volltextsuche via MCP-Tools ausführen und Treffer sammeln
+           (mindestens eine einfache Kernbegriff-Suche, optional weitere,
+           KI-verfeinerte Runden).
+        2. Ausgewählte Treffer mit Excerpts anreichern
+        3. Prompt auf Basis der Treffer bauen
+        4. LLM mit dem Prompt abfragen
         """
         question = (question or "").strip()
         if not question:
@@ -97,15 +98,66 @@ class RechercheAgent(object):
 
             effective_question = self._resolve_effective_question(question)
 
-            # Basis-Suchlauf ohne mehrfache Refinement-Schleifen: zuerst mit
-            # effektiver Frage suchen, spaeter kann ein Refinement-Loop
-            # stabil darauf aufbauen.
-            search_queries = self._plan_search_queries(effective_question)
-            search_hits = self._run_search_plan(search_queries)
-            if not search_hits:
+            # Mehrstufiger Such-Loop: zuerst eine einfache Kernbegriff-Suche,
+            # dann optional KI-verfeinerte Runden.
+            max_rounds = max(1, int(self.prefs.get("max_search_rounds", 2)))
+            min_hits = max(0, int(self.prefs.get("min_hits_required", 3)))
+
+            all_hits: List[SearchHit] = []
+            all_queries: List[str] = []
+
+            for round_index in range(max_rounds):
+                if round_index == 0:
+                    # Runde 1: einfache, breit gefasste Kernbegriffe ohne
+                    # komplexe Planner-Logik. Hier nutzen wir nur den
+                    # Schlagwort-Extractor auf der effektiven Frage und
+                    # bauen eine Basisquery daraus.
+                    core_keywords = self._extract_keywords(effective_question)
+                    if not core_keywords:
+                        core_keywords = [effective_question]
+                    # Fuer Runde 1 zwingen wir einen OR-Operator, um die
+                    # Suchmenge nicht von vornherein zu stark einzuengen.
+                    base_query = " ".join(core_keywords)
+                    queries = [base_query]
+                    self._trace_log(f"Suchrunde 1 (Kernbegriffe): {queries!r}")
+                else:
+                    # Folge-Runden: Planner/Refinement verwenden, um gezieltere
+                    # Queries aus bisherigen Treffern/Frage zu erzeugen.
+                    refined = self._refine_search_queries(
+                        original_question=question,
+                        effective_question=effective_question,
+                        previous_queries=all_queries,
+                        hits=all_hits,
+                    )
+                    if not refined:
+                        break
+                    queries = refined
+                    self._trace_log(f"Suchrunde {round_index+1} (Refinement): {queries!r}")
+
+                # Queries aus dieser Runde ausführen und Treffer sammeln
+                round_hits = self._run_search_plan(queries)
+                all_queries.extend(queries)
+
+                # Deduplizierung anhand (book_id, isbn)
+                seen_ids: Set[Tuple[Any, Any]] = set(
+                    (h.book_id, h.isbn) for h in all_hits
+                )
+                new_hits: List[SearchHit] = []
+                for h in round_hits:
+                    ident = (h.book_id, h.isbn)
+                    if ident in seen_ids:
+                        continue
+                    seen_ids.add(ident)
+                    new_hits.append(h)
+                all_hits.extend(new_hits)
+
+                if len(all_hits) >= min_hits:
+                    break
+
+            if not all_hits:
                 return "System: Keine passenden Treffer im MCP-Server gefunden."
 
-            enriched_hits = self._enrich_hits_with_excerpts(search_hits)
+            enriched_hits = self._enrich_hits_with_excerpts(all_hits)
             # Session-State aktualisieren
             self._last_question = question
             self._last_hits = enriched_hits
@@ -162,14 +214,10 @@ class RechercheAgent(object):
     # ------------------ Planning helpers ------------------
 
     def _plan_search_queries(self, question: str) -> List[str]:
-        """Erzeuge Suchabfragen fuer die Volltextsuchen.
+        """Alte Query-Planungsmethode (derzeit nicht mehr direkt verwendet).
 
-        Kombination aus heuristischer Basissuche und LLM-geplanter Query-Liste:
-        - Aus der (effektiven) Frage wird immer eine robuste Keyword-Query gebaut,
-          z. B. "fahrzeug AND bussysteme" (oder OR, je nach Einstellung).
-        - Optional werden vom LLM vorgeschlagene Suchanfragen ergaenzend
-          hinzugefuegt (Synonyme, verwandte Begriffe etc.), die sowohl AND-
-          als auch OR-Kombinationen enthalten duerfen.
+        Wird aus Kompatibilitaetsgruenden beibehalten, der eigentliche
+        mehrstufige Suchablauf findet in ``answer_question`` statt.
         """
         use_llm = bool(self.prefs.get('use_llm_query_planning', True))
         llm_queries: List[str] = []
@@ -195,10 +243,11 @@ class RechercheAgent(object):
                 "eine kleine Menge von Suchabfragen zu generieren, wie man sie einer Suchmaschine\n"
                 "oder Volltextsuche uebergibt.\n\n"
                 "Rahmenbedingungen:\n"
+                "- Bevorzuge einfache Suchphrasen mit Leerzeichen (OR-Effekt), z. B. 'fahrzeug bussysteme'.\n"
+                "- Verwende AND nur sparsam, wenn mehrere Begriffe unbedingt gemeinsam auftreten sollen\n"
+                "  und ein einzelner Begriff alleine zu viele irrelevante Treffer liefern wuerde.\n"
                 "- Extrahiere und kombiniere nur die wichtigsten Fachbegriffe, Abkuerzungen und Synonyme.\n"
-                "- Erzeuge gerne mehrere Varianten, z. B. einmal enger mit AND-Verknuepfungen,\n"
-                "  und einmal breiter mit OR-Verknuepfungen zwischen Schlagwoertern.\n"
-                "- Du darfst bei Bedarf boolsche Operatoren AND/OR nutzen, aber keine komplexen Ausdruecke.\n"
+                "- Du darfst bei Bedarf boolsche Operatoren AND/OR nutzen, aber vermeide lange UND-Ketten.\n"
                 "- Jede Zeile soll eine eigenstaendige Suchanfrage sein (wie bei einer Suchmaschine).\n"
                 "- Vermeide Hoeflichkeitsfloskeln und Funktionsverben (z. B. 'erklaere', 'sag mir', 'bitte').\n"
                 "- Nutze gegebenenfalls auch anderssprachige Fachbegriffe, wenn diese ueblich sind.\n"
@@ -214,28 +263,19 @@ class RechercheAgent(object):
                 log.warning("LLM-Query-Planung fehlgeschlagen: %s", exc)
                 llm_queries = []
 
-        # 1) Robuste Keyword-basierte Query aus der (effektiven) Frage
+        # Basiskompatibilitaet: Keywords + Planner-Queries zusammenführen
         keywords = self._extract_keywords(question)
         base_query = self._keywords_to_query(keywords) if keywords else ""
 
         queries: List[str] = []
         if base_query:
             queries.append(base_query)
-
-        # 2) Vom LLM gelieferte Queries ergaenzend aufnehmen
         for q in llm_queries:
             if q and q not in queries:
                 queries.append(q)
-
-        # 3) Fallback, falls weder Keywords noch LLM etwas liefern
         if not queries:
             queries = [question]
-
-        queries = queries[: self.max_query_variants]
-
-        log.info("Geplante Volltext-Queries: %r", queries)
-        self._trace_log(f"Geplante Volltext-Queries: {queries!r}")
-        return queries
+        return queries[: self.max_query_variants]
 
     def _keywords_to_query(self, keywords: List[str]) -> str:
         """Baue eine boolsche Volltextquery aus Schlagwoertern.
@@ -633,10 +673,9 @@ class RechercheAgent(object):
         """Erzeuge eine Schlagwortliste ueber den LLM statt ueber harte Heuristik.
 
         Die KI erhaelt einen kompakten Prompt und soll nur relevante Begriffe
-        bzw. einfache Suchphrasen (mit Leerzeichen als OR) oder AND/OR-Kombinationen
-        liefern, jeweils eine pro Zeile. Diese Funktion dient als Fallback oder
-        zusaetzliche Quelle, falls _plan_search_queries eine reine Keywordliste
-        benoetigt.
+        bzw. einfache Suchphrasen liefern, bevorzugt mit Leerzeichen (OR-Effekt).
+        AND soll nur sparsam eingesetzt werden, wenn ein einzelner Begriff
+        allein zu unscharf waere. Jede Zeile ist eine eigene Suchphrase.
         """
         text = (text or "").strip()
         if not text:
@@ -649,18 +688,25 @@ class RechercheAgent(object):
             tokens = [t.strip() for t in cleaned.split() if t.strip()]
             return tokens[: int(self.prefs.get('max_search_keywords', 5))]
 
+        extra_hint = str(self._pref_value('keyword_extraction_hint', '') or '').strip()
+        hint_block = "" if not extra_hint else (
+            "Zusaetzlicher Hinweis des Benutzers fuer die Schlagwort-Extraktion:\n"
+            f"{extra_hint}\n\n"
+        )
+
         prompt = (
             "Du erstellst Schlagwoerter fuer eine Volltextsuche.\n"
             "Aus der folgenden Frage sollst du nur die wichtigsten Suchbegriffe\n"
             "und einfachen Suchphrasen extrahieren.\n\n"
             "Vorgaben:\n"
-            "- Nutze vor allem Fachbegriffe, Titelwoerter und relevante Abkuerzungen.\n"
-            "- Du darfst Leerzeichen als ODER-Operator interpretieren (z. B. 'fahrzeug bussysteme'\n"
-            "  bedeutet: Treffer, die entweder 'fahrzeug' oder 'bussysteme' enthalten).\n"
-            "- Wenn sinnvoll, kannst du auch explizite AND/OR-Operatoren verwenden\n"
-            "  (z. B. 'fahrzeug AND bussysteme', 'CAN OR LIN OR FlexRay').\n"
-            "- Kein Erklaertext, nur eine Liste von Begriffen/Queries, jeweils eine pro Zeile.\n\n"
-            f"Frage:\n{text}\n"
+            "- Bevorzuge kurze Phrasen mit Leerzeichen, z. B. 'fahrzeug bussysteme',\n"
+            "  was einer ODER-Suche ueber beide Begriffe entspricht.\n"
+            "- Verwende AND nur, wenn zwei Begriffe wirklich gemeinsam auftreten muessen,\n"
+            "  z. B. 'penetration testing' AND 'hacking'. Lange UND-Ketten sollen vermieden werden.\n"
+            "- Du darfst OR verwenden, aber halte die Ausdruecke einfach (z. B. 'CAN OR LIN OR FlexRay').\n"
+            "- Kein Erklaertext, keine Saetze, nur eine Liste von Begriffen/Queries,\n"
+            "  jeweils eine pro Zeile.\n\n"
+            f"{hint_block}Frage:\n{text}\n"
         )
 
         try:
