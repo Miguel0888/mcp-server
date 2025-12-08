@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import logging
+import asyncio
 import json
+import logging
 import re
-import urllib.request
-import urllib.error
 from typing import Any, Dict, List, Tuple, Set
 
-from calibre_plugins.mcp_server_recherche.config import prefs
+try:
+    import websockets
+except ImportError as exc:  # pragma: no cover - runtime environment
+    websockets = None
+
 from calibre_plugins.mcp_server_recherche.provider_client import ChatProviderClient
 
 log = logging.getLogger(__name__)
@@ -83,7 +86,7 @@ class RechercheAgent(object):
     def _extract_queries(raw_response: str) -> List[str]:
         queries: List[str] = []
         for line in raw_response.splitlines():
-            cleaned = re.sub(r"^[\-•\d\.)\s]+", "", line.strip())
+            cleaned = re.sub(r"^[\-•\d\)\s]+", "", line.strip())
             if cleaned and cleaned not in queries:
                 queries.append(cleaned)
         return queries
@@ -125,6 +128,30 @@ class RechercheAgent(object):
             hits = self._extract_hits_from_content(result["content"])
         return hits or []
 
+    def _extract_hits_from_content(self, content: Any) -> List[Dict[str, Any]]:
+        """Best-effort extraction of hits from FastMCP-style content blocks."""
+        if not content:
+            return []
+
+        hits: List[Dict[str, Any]] = []
+        for block in content:
+            # Expect something like {"type": "object", "value": {...}}
+            value = None
+            if isinstance(block, dict):
+                # direct hits-list
+                if "hits" in block:
+                    value = block
+                else:
+                    value = block.get("value")
+            if not isinstance(value, dict):
+                continue
+            raw_hits = value.get("hits")
+            if isinstance(raw_hits, list):
+                for h in raw_hits:
+                    if isinstance(h, dict):
+                        hits.append(h)
+        return hits
+
     def _fetch_excerpts_for_hits(self, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         enriched: List[Dict[str, Any]] = []
         excerpt_count = 0
@@ -137,7 +164,11 @@ class RechercheAgent(object):
                 except MCPTransportError as exc:
                     log.warning("Excerpt-Tool fehlgeschlagen fuer ISBN %s: %s", isbn, exc)
                 else:
-                    entry["excerpt"] = excerpt_payload.get("text") or excerpt_payload.get("excerpt") or ""
+                    entry["excerpt"] = (
+                        excerpt_payload.get("text")
+                        or excerpt_payload.get("excerpt")
+                        or ""
+                    )
                     entry["excerpt_source"] = excerpt_payload.get("source_hint")
                     excerpt_count += 1
             enriched.append(entry)
@@ -158,39 +189,54 @@ class RechercheAgent(object):
         return result
 
     def _call_mcp_tool(self, tool_payload: Dict[str, Any], request_id: str) -> Dict[str, Any]:
+        """Synchroner Helper, der einen WebSocket-RPC-Call ausfuehrt."""
+
+        if websockets is None:  # pragma: no cover - nur Laufzeitumgebung
+            raise MCPTransportError(
+                "Python-Paket 'websockets' ist im Calibre-Plugin nicht verfuegbar."
+            )
+
         url = self._tool_endpoint()
         payload = {
             "id": request_id,
-            "method": "tools.call",
+            "method": "call_tool",
             "params": tool_payload,
         }
-        response = self._post_json(url, payload)
+
+        async def _do_call() -> Dict[str, Any]:
+            data = json.dumps(payload)
+            try:
+                async with websockets.connect(url) as websocket:
+                    await websocket.send(data)
+                    raw = await websocket.recv()
+            except Exception as exc:  # noqa: BLE001
+                raise MCPTransportError(f"Verbindung zum MCP-Server fehlgeschlagen: {exc}") from exc
+
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError as exc:  # pragma: no cover - defensive
+                raise MCPTransportError(
+                    "Antwort des MCP-Servers konnte nicht gelesen werden"
+                ) from exc
+
+        try:
+            response = asyncio.run(_do_call())
+        except RuntimeError as exc:
+            # Falls bereits ein Eventloop laeuft (z. B. in manchen Qt-Konstellationen)
+            log.error("Async-Call im laufenden Eventloop fehlgeschlagen: %s", exc)
+            raise MCPTransportError(
+                "Konnte keine WebSocket-Verbindung zum MCP-Server herstellen (Eventloop-Konflikt)."
+            ) from exc
+
         if "error" in response:
             message = response["error"].get("message", "Unbekannter MCP-Fehler")
             raise MCPTransportError(message)
         return response
 
-    def _post_json(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=self.request_timeout) as resp:
-                raw = resp.read().decode("utf-8")
-        except urllib.error.URLError as exc:  # network boundary
-            raise MCPTransportError(getattr(exc, "reason", str(exc))) from exc
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError as exc:  # pragma: no cover - defensive
-            raise MCPTransportError("Antwort des MCP-Servers konnte nicht gelesen werden") from exc
-
     def _tool_endpoint(self) -> str:
         host, port = self._server_config()
-        return f"http://{host}:{port}/tools/call"
+        # WebSocket-URL; Server lauscht auf ws://host:port
+        return f"ws://{host}:{port}"
 
     def _server_config(self) -> Tuple[str, int]:
         host = self._pref_value("server_host", "127.0.0.1")
