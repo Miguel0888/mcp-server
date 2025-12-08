@@ -51,7 +51,7 @@ log = logging.getLogger(__name__)
 class ChatMessageWidget(QFrame):
     """Eine einzelne Chat-Nachricht (User, AI, System, Debug) mit optionalen Tool-Details."""
 
-    def __init__(self, role: str, text: str, tool_trace: str | None = None, parent: QWidget | None = None):
+    def __init__(self, role: str, text: str = "", tool_trace: str | None = None, parent: QWidget | None = None):
         super().__init__(parent)
         self.role = role
         self.tool_trace = tool_trace
@@ -75,26 +75,20 @@ class ChatMessageWidget(QFrame):
         # Inhalt als QTextBrowser (unterstuetzt einfache Markdown/HTML)
         self.text_browser = QTextBrowser(self)
         self.text_browser.setOpenExternalLinks(True)
-        # Fuer kurze User-Fragen nicht unnötig viel Hoehe reservieren
         self.text_browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.text_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        # Wenn verfuegbar, einfachen Markdown anzeigen, sonst HTML-Fallback
-        try:
-            # Qt6: QTextBrowser.setMarkdown; kann in aelteren Umgebungen fehlen
-            setter = getattr(self.text_browser, 'setMarkdown', None)
-        except Exception:
-            setter = None
-        if callable(setter):
-            setter(text)
-        else:
-            self.text_browser.setHtml(self._to_html(text))
         self.text_browser.setFrameStyle(QFrame.NoFrame)
         layout.addWidget(self.text_browser)
+        # Initialen Text setzen (kann leer sein und spaeter gefuellt werden)
+        self.set_message_text(text)
 
         # Optionaler aufklappbarer Tool-Trace mit Pfeilsymbol und dynamischem Titel
         self.trace_widget = None
         self.trace_title_label = None
-        if tool_trace is not None:
+        # Wir erzeugen immer einen Trace-Bereich fuer AI-Nachrichten, damit
+        # der aktuelle Step von Beginn an sichtbar sein kann. Fuer andere
+        # Rollen nur, wenn explizit tool_trace uebergeben wurde.
+        if self.role == 'ai' or tool_trace is not None:
             toggle_row = QHBoxLayout()
             toggle_row.setContentsMargins(0, 0, 0, 0)
             toggle_row.setSpacing(2)
@@ -114,22 +108,34 @@ class ChatMessageWidget(QFrame):
 
             self.trace_widget = QTextEdit(self)
             self.trace_widget.setReadOnly(True)
-            self.trace_widget.setPlainText(tool_trace)
+            self.trace_widget.setPlainText(tool_trace or "")
             self.trace_widget.setVisible(False)
             self.trace_widget.setStyleSheet('font-size: 10px; color: #555;')
             self.trace_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
             layout.addWidget(self.trace_widget)
 
-    def update_trace(self, title: str | None, content: str):
-        """Trace-Inhalt und optionalen Titel aktualisieren.
+    def set_message_text(self, text: str) -> None:
+        """Antworttext setzen und Groesse an Inhalt anpassen.
 
-        - content: kompletter Blocktext (alle Debug-Zeilen des Steps)
-        - title: sichtbarer Beschreibungstext fuer den aktuellen Schritt;
-          wenn None oder leer, wird nur der Pfeil ohne Titel angezeigt.
+        Darf auch mehrfach aufgerufen werden (zunaechst leer, spaeter
+        mit der endgueltigen Antwort).
         """
+        text = text or ""
+        try:
+            setter = getattr(self.text_browser, 'setMarkdown', None)
+        except Exception:
+            setter = None
+        if callable(setter):
+            self.text_browser.setMarkdown(text)
+        else:
+            self.text_browser.setHtml(self._to_html(text))
+        self.text_browser.document().adjustSize()
+
+    def update_trace(self, title: str | None, content: str):
+        """Trace-Inhalt und optionalen Titel aktualisieren."""
         if self.trace_widget is None:
             return
-        self.trace_widget.setPlainText(content)
+        self.trace_widget.setPlainText(content or "")
         if self.trace_title_label is not None:
             self.trace_title_label.setText(title or '')
 
@@ -560,8 +566,9 @@ class MCPServerRechercheDialog(QDialog):
         """Loesche aktuellen Chatverlauf und setze Agent-Session zurueck."""
         self.chat_panel.clear()
         self._trace_buffer = []
+        self._trace_title = None
+        self._current_ai_message = None
         self.agent = RechercheAgent(prefs, trace_callback=self._append_trace)
-        # Hinweis nur in der Statusleiste, nicht im Chatverlauf
         self._enqueue_status('Neuer Chat gestartet.')
 
     def send_message(self):
@@ -576,28 +583,35 @@ class MCPServerRechercheDialog(QDialog):
         self.input_edit.clear()
         self._toggle_send_state(True)
 
+        # Sofort einen leeren AI-Block mit Debug-Bereich anzeigen, damit
+        # die folgenden Trace-Updates sichtbar sind, waehrend der Agent
+        # arbeitet.
+        self._trace_buffer = []
+        self._trace_title = None
+        self._current_ai_message = self.chat_panel.add_ai_message("", tool_trace="")
+
         QTimer.singleShot(0, lambda: self._process_chat(text))
 
     def _process_chat(self, text: str):
         try:
             self._enqueue_status('Starte Recherche uebers MCP-Backend ...')
-            # neuen Trace-Kontext fuer diese Frage
-            self._trace_buffer = []
-            self._trace_title = None
-            self._current_ai_message = None
             response = self.agent.answer_question(text)
         except Exception as exc:
             log.exception("Research agent failed")
             self._enqueue_status(f'Fehler in der Recherche-Pipeline: {exc}')
         else:
             if response:
-                tool_trace = "\n".join(self._trace_buffer) if self._trace_buffer else None
-                # Das konkrete ChatMessageWidget fuer diese AI-Antwort holen,
-                # statt spaeter ueber das Layout zu raten.
-                ai_widget = self.chat_panel.add_ai_message(response, tool_trace=tool_trace)
-                self._current_ai_message = ai_widget
-                if self._trace_title and tool_trace is not None:
-                    ai_widget.update_trace(self._trace_title, tool_trace)
+                # Endgueltige Antwort in den bereits vorhandenen AI-Block
+                # einfuegen und Groesse automatisch anpassen.
+                if self._current_ai_message is not None:
+                    self._current_ai_message.set_message_text(response)
+                    if self._trace_title and self._trace_buffer:
+                        content = "\n".join(self._trace_buffer)
+                        self._current_ai_message.update_trace(self._trace_title, content)
+                else:
+                    # Fallback, falls aus irgendeinem Grund kein AI-Block existiert
+                    tool_trace = "\n".join(self._trace_buffer) if self._trace_buffer else None
+                    self._current_ai_message = self.chat_panel.add_ai_message(response, tool_trace=tool_trace)
             else:
                 self._enqueue_status('Keine Antwort vom Provider erhalten.')
         finally:
@@ -608,8 +622,7 @@ class MCPServerRechercheDialog(QDialog):
 
         Debug-Ausgaben werden pro Frage als ein Block gesammelt. Der
         Beschreibungstext (Titel) kann sich waehrend des laufenden Steps
-        aendern und verschwindet, sobald der Step abgeschlossen ist;
-        der Pfeil zum Aufklappen bleibt jedoch erhalten.
+        aendern. Der Pfeil zum Aufklappen bleibt erhalten.
         """
         text = (message or '').strip()
         if text:
@@ -617,9 +630,8 @@ class MCPServerRechercheDialog(QDialog):
                 self._trace_title = text
             self._trace_buffer.append(text)
 
-        # Live-Update der aktuell sichtbaren AI-Antwort – wenn sie schon
-        # gerendert ist. Vor Fertigstellung der Antwort werden die Traces
-        # nur gepuffert und dann in _process_chat gesetzt.
+        # Live-Update der aktuell sichtbaren AI-Nachricht: schon waehrend
+        # der Agent arbeitet aktualisieren wir Titel und Inhalt.
         if self._current_ai_message is not None:
             content = "\n".join(self._trace_buffer)
             title = self._trace_title if self.debug_checkbox.isChecked() else None
