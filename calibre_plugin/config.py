@@ -64,6 +64,9 @@ prefs.defaults['query_planner_hint'] = ''
 prefs.defaults['answer_style_hint'] = ''
 # Hint fuer Schlagwort-Extraktion
 prefs.defaults['keyword_extraction_hint'] = ''
+# Optionaler zusaetzlicher LLM-Schlagwort-Lauf in anderer Sprache
+prefs.defaults['second_keyword_language_enabled'] = False
+prefs.defaults['second_keyword_language'] = 'Englisch'
 # UI-Layout-Defaults fuer den Chat-Dialog
 prefs.defaults['window_width'] = 800
 prefs.defaults['window_height'] = 600
@@ -202,6 +205,22 @@ class MCPServerRechercheConfigWidget(QWidget):
             _('Optionaler Zusatz fuer die Schlagwort-Extraktion, z. B. "nur deutsche Fachbegriffe verwenden"')
         )
         tuning_form.addRow(_('Hinweis fuer Schlagwort-Prompt:'), self.keyword_extraction_hint_edit)
+
+        # Zusatz: zweite Schlagwortsprache
+        self.second_lang_enabled_checkbox = QCheckBox(
+            _('Zweiten Schlagwort-Lauf in anderer Sprache verwenden'), self
+        )
+        self.second_lang_enabled_checkbox.setChecked(
+            prefs.get('second_keyword_language_enabled', False)
+        )
+        tuning_form.addRow('', self.second_lang_enabled_checkbox)
+
+        self.second_lang_edit = QLineEdit(self)
+        self.second_lang_edit.setText(prefs.get('second_keyword_language', 'Englisch'))
+        self.second_lang_edit.setPlaceholderText(
+            _('Sprache fuer zweiten Lauf, z. B. Englisch, French, Spanish')
+        )
+        tuning_form.addRow(_('Zweite Schlagwort-Sprache:'), self.second_lang_edit)
 
         # Info label
         info = QLabel(
@@ -363,6 +382,8 @@ class MCPServerRechercheConfigWidget(QWidget):
         prefs['query_planner_hint'] = self.query_planner_hint_edit.text().strip()
         prefs['answer_style_hint'] = self.answer_style_hint_edit.text().strip()
         prefs['keyword_extraction_hint'] = self.keyword_extraction_hint_edit.text().strip()
+        prefs['second_keyword_language_enabled'] = self.second_lang_enabled_checkbox.isChecked()
+        prefs['second_keyword_language'] = self.second_lang_edit.text().strip() or 'Englisch'
 
         # Suchmodus
         prefs['use_llm_query_planning'] = self.use_llm_planning_checkbox.isChecked()

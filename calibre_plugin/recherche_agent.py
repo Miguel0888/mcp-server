@@ -682,6 +682,9 @@ class RechercheAgent(object):
         bzw. einfache Suchphrasen liefern, bevorzugt mit Leerzeichen (OR-Effekt).
         AND soll nur sparsam eingesetzt werden, wenn ein einzelner Begriff
         allein zu unscharf waere. Jede Zeile ist eine eigene Suchphrase.
+        Optional kann ein zweiter Lauf in einer anderen Sprache erfolgen,
+        um z. B. englische Fachbegriffe fuer eine deutschsprachige Frage
+        zu generieren.
         """
         text = (text or "").strip()
         if not text:
@@ -700,7 +703,7 @@ class RechercheAgent(object):
             f"{extra_hint}\n\n"
         )
 
-        prompt = (
+        base_prompt = (
             "Du erstellst Schlagwoerter fuer eine Volltextsuche.\n"
             "Aus der folgenden Frage sollst du nur die wichtigsten Suchbegriffe\n"
             "und einfachen Suchphrasen extrahieren.\n\n"
@@ -715,19 +718,37 @@ class RechercheAgent(object):
             f"{hint_block}Frage:\n{text}\n"
         )
 
-        try:
-            response = self.chat_client.send_chat(prompt)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("LLM-Schlagwort-Extraktion fehlgeschlagen: %s", exc)
-            return []
+        def _run_llm(prompt: str) -> List[str]:
+            try:
+                response = self.chat_client.send_chat(prompt)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("LLM-Schlagwort-Extraktion fehlgeschlagen: %s", exc)
+                return []
+            raw_lines = [line.strip() for line in response.splitlines() if line.strip()]
+            max_kws = int(self.prefs.get('max_search_keywords', 5))
+            out: List[str] = []
+            for line in raw_lines:
+                if line and line not in out:
+                    out.append(line)
+                if len(out) >= max_kws:
+                    break
+            return out
 
-        raw = [line.strip() for line in response.splitlines() if line.strip()]
-        max_kws = int(self.prefs.get('max_search_keywords', 5))
-        keywords: List[str] = []
-        for line in raw:
-            if line and line not in keywords:
-                keywords.append(line)
-            if len(keywords) >= max_kws:
-                break
+        # Erster Lauf: Schlagwoerter in der Sprache der Frage
+        keywords = _run_llm(base_prompt)
+
+        # Optionaler zweiter Lauf in anderer Sprache (z. B. Englisch)
+        second_enabled = bool(self._pref_value('second_keyword_language_enabled', False))
+        if second_enabled:
+            lang = str(self._pref_value('second_keyword_language', 'Englisch') or 'Englisch').strip()
+            second_prompt = (
+                "Dies ist die gleiche Aufgabe, aber bitte liefere die Suchbegriffe explizit "
+                f"in der Sprache: {lang}.\n\n" + base_prompt
+            )
+            second_keywords = _run_llm(second_prompt)
+            for kw in second_keywords:
+                if kw not in keywords:
+                    keywords.append(kw)
+
         return keywords
 

@@ -940,29 +940,39 @@ class MCPServerRechercheDialog(QDialog):
             book_id = hit.get('book_id')
 
             header_row = QHBoxLayout()
+            # Markierungs-Button LINKS neben dem Titel, damit er auch bei
+            # kleiner Fensterbreite sichtbar bleibt.
+            mark_btn = QToolButton(container)
+            mark_btn.setText('☆')
+            mark_btn.setCheckable(True)
+            mark_btn.setToolTip('Buch in Calibre markieren/entmarkieren')
+            mark_btn.clicked.connect(
+                lambda checked, bid=book_id, btn=mark_btn: self._toggle_mark_book(bid, btn, checked)
+            )
+            header_row.addWidget(mark_btn)
+
             header_label = QLabel(f"{title}", container)
             header_label.setStyleSheet('font-weight: bold;')
             header_row.addWidget(header_label)
             if isbn:
                 header_row.addWidget(QLabel(f"ISBN: {isbn}", container))
             header_row.addStretch(1)
-            mark_btn = QToolButton(container)
-            mark_btn.setText('☆')
-            mark_btn.setCheckable(True)
-            mark_btn.clicked.connect(lambda checked, bid=book_id, btn=mark_btn: self._toggle_mark_book(bid, btn, checked))
-            header_row.addWidget(mark_btn)
             lay.addLayout(header_row)
 
             excerpt_full = (hit.get('excerpt') or '').strip()
             if excerpt_full:
-                # Preview (erste Zeilen)
+                # Preview (erste Zeilen des aktuellen Excerpts)
                 preview_lines = '\n'.join(excerpt_full.splitlines()[:3])
                 preview_label = QLabel(preview_lines, container)
                 preview_label.setStyleSheet('font-size: 10px; color: #555;')
                 preview_label.setWordWrap(True)
                 lay.addWidget(preview_label)
 
-                # Aufklappbarer Voll-Excerpt
+                # Aufklappbarer Voll-Excerpt: wir bereiten den Container so vor,
+                # dass spaeter bei weiteren Runs fuer dasselbe Buch weitere
+                # Excerpts einfach angehaengt werden koennen (statt zu
+                # ueberschreiben). Zunaechst nutzen wir aber den im Hit
+                # gelieferten Text als einzigen Block.
                 toggle_row = QHBoxLayout()
                 toggle_row.setContentsMargins(0, 0, 0, 0)
                 toggle_row.setSpacing(2)
@@ -982,7 +992,7 @@ class MCPServerRechercheDialog(QDialog):
                 full_label.setPlainText(excerpt_full)
                 full_label.setVisible(False)
                 full_label.setStyleSheet('font-size: 10px; color: #555;')
-                full_label.setMaximumHeight(120)
+                full_label.setMaximumHeight(160)
                 lay.addWidget(full_label)
 
                 def _toggle_full(checked: bool, widget=full_label, btn=toggle_btn):
@@ -1000,23 +1010,25 @@ class MCPServerRechercheDialog(QDialog):
 
         Nutzt die bekannte marked=True Technik, wie sie auch andere
         Plugins verwenden. Beim erneuten Klick wird das Markieren
-        umgekehrt.
+        umgekehrt. Wenn Calibre weitere Markierungen enthaelt, werden
+        diese beibehalten.
         """
         if book_id is None:
             return
         try:
             db = self.db
-            # Mark-Zustand im GUI toggeln
+            current = set(getattr(db, 'marked_ids', []) or [])
             if checked:
+                current.add(book_id)
                 button.setText('★')
-                db.set_marked_ids(list(set(db.marked_ids | {book_id})))
             else:
+                current.discard(book_id)
                 button.setText('☆')
-                current = set(db.marked_ids)
-                if book_id in current:
-                    current.remove(book_id)
-                db.set_marked_ids(list(current))
-            # Ansicht im GUI aktualisieren
-            self.gui.library_view.model().refresh_marked()
+            db.set_marked_ids(list(current))
+            # Ansicht im GUI aktualisieren, falls verfuegbar
+            try:
+                self.gui.library_view.model().refresh_marked()
+            except Exception:
+                log.exception('Failed to refresh marked state in library_view')
         except Exception:
             log.exception("Failed to toggle marked state for book_id=%r", book_id)
