@@ -14,8 +14,13 @@ from pathlib import Path
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 SRC_DIR = PLUGIN_DIR.parent / 'src'
+MODULE_PATHS = [PLUGIN_DIR]
 if SRC_DIR.exists():
-    sys.path.insert(0, str(SRC_DIR))
+    MODULE_PATHS.append(SRC_DIR)
+for path in MODULE_PATHS:
+    str_path = str(path)
+    if str_path not in sys.path:
+        sys.path.insert(0, str_path)
 
 
 class MCPServerRecherchePlugin(InterfaceActionBase):
