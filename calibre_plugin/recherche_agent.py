@@ -34,6 +34,8 @@ class RechercheAgent(object):
         self.max_excerpt_chars = 1200
         self.context_hit_limit = 8
         self.request_timeout = 15
+        # Cache der vom Server gemeldeten Tools (name -> schema)
+        self._tool_schemas: Dict[str, Dict[str, Any]] = {}
 
     def answer_question(self, question):
         """Run planning, tool orchestration, and summarisation."""
@@ -44,6 +46,8 @@ class RechercheAgent(object):
         log.info("Recherche-Agent gestartet: %s", question)
 
         try:
+            # Sicherstellen, dass die Tool-Liste initialisiert ist
+            self._ensure_tools_cached()
             queries = self._plan_search_queries(question)
             hits = self._collect_fulltext_hits(queries)
             if not hits:
@@ -55,6 +59,31 @@ class RechercheAgent(object):
 
         prompt = self._build_prompt(question, enriched_hits)
         return self.chat_client.send_chat(prompt)
+
+    # ------------------ Tool discovery ------------------
+
+    def _ensure_tools_cached(self) -> None:
+        """Lade die Tool-Liste einmalig vom Server (list_tools)."""
+        if self._tool_schemas:
+            return
+
+        response = self._call_mcp("list_tools", params={})
+        result = response.get("result") or {}
+        tools = result.get("tools") or []
+        if not tools:
+            raise MCPTransportError("MCP-Server meldet keine Tools ueber list_tools")
+
+        schemas: Dict[str, Dict[str, Any]] = {}
+        for tool in tools:
+            name = tool.get("name")
+            if not name:
+                continue
+            schemas[name] = tool
+        self._tool_schemas = schemas
+        log.info("MCP list_tools lieferte: %s", list(schemas.keys()))
+
+    def _has_tool(self, name: str) -> bool:
+        return name in self._tool_schemas
 
     # ------------------ Planning helpers ------------------
 
@@ -95,6 +124,9 @@ class RechercheAgent(object):
 
     def _collect_fulltext_hits(self, queries: List[str]) -> List[Dict[str, Any]]:
         """Run the full-text search for each query and aggregate unique hits."""
+        if not self._has_tool("calibre_fulltext_search"):
+            raise MCPTransportError("Tool 'calibre_fulltext_search' ist auf dem MCP-Server nicht verfuegbar.")
+
         aggregated: List[Dict[str, Any]] = []
         seen_ids: Set[Tuple[Any, Any]] = set()
 
@@ -117,16 +149,33 @@ class RechercheAgent(object):
         return aggregated[: self.max_hits_total]
 
     def _run_fulltext_search(self, query, max_hits=5):
+        # FastMCP erzeugt fuer unsere Tools typischerweise ein Schema mit "input"-Property
+        arguments = {"query": query, "limit": max_hits}
         payload = {
             "name": "calibre_fulltext_search",
-            "arguments": {"query": query, "limit": max_hits},
+            "arguments": self._wrap_arguments("calibre_fulltext_search", arguments),
         }
-        response = self._call_mcp_tool(payload, request_id="ft-search")
+        response = self._call_mcp("call_tool", params=payload, request_id="ft-search")
         result = (response.get("result") or {})
         hits = result.get("hits")
         if hits is None and "content" in result:
             hits = self._extract_hits_from_content(result["content"])
         return hits or []
+
+    def _wrap_arguments(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Passe Argument-Struktur an das gemeldete input_schema an.
+
+        Viele FastMCP-Tools verwenden ein Schema der Form
+        {"properties": {"input": {"$ref": ...}}, "required": ["input"]}.
+        In diesem Fall muessen wir unsere arguments unter "input" schachteln.
+        """
+        schema_entry = self._tool_schemas.get(tool_name) or {}
+        input_schema = schema_entry.get("input_schema") or {}
+        props = input_schema.get("properties") or {}
+
+        if "input" in props and list(props.keys()) == ["input"]:
+            return {"input": arguments}
+        return arguments
 
     def _extract_hits_from_content(self, content: Any) -> List[Dict[str, Any]]:
         """Best-effort extraction of hits from FastMCP-style content blocks."""
@@ -153,6 +202,10 @@ class RechercheAgent(object):
         return hits
 
     def _fetch_excerpts_for_hits(self, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not self._has_tool("calibre_get_excerpt"):
+            # Ohne Excerpt-Tool liefern wir nur Snippets, keine harte Fehlermeldung
+            return list(hits)
+
         enriched: List[Dict[str, Any]] = []
         excerpt_count = 0
         for hit in hits:
@@ -175,32 +228,36 @@ class RechercheAgent(object):
         return enriched
 
     def _call_excerpt_tool(self, isbn: str) -> Dict[str, Any]:
+        arguments = {
+            "isbn": isbn,
+            "max_chars": self.max_excerpt_chars,
+        }
         payload = {
             "name": "calibre_get_excerpt",
-            "arguments": {
-                "isbn": isbn,
-                "max_chars": self.max_excerpt_chars,
-            },
+            "arguments": self._wrap_arguments("calibre_get_excerpt", arguments),
         }
-        response = self._call_mcp_tool(payload, request_id=f"excerpt-{isbn}")
+        response = self._call_mcp("call_tool", params=payload, request_id=f"excerpt-{isbn}")
         result = response.get("result")
         if not result:
             raise MCPTransportError("Excerpt-Tool lieferte kein Ergebnis")
         return result
 
-    def _call_mcp_tool(self, tool_payload: Dict[str, Any], request_id: str) -> Dict[str, Any]:
-        """Synchroner Helper, der einen WebSocket-RPC-Call ausfuehrt."""
+    # ------------------ Low-level MCP/WebSocket transport ------------------
+
+    def _call_mcp(self, method: str, params: Dict[str, Any], request_id: str | None = None) -> Dict[str, Any]:
+        """Allgemeiner synchroner MCP-RPC-Wrapper ueber WebSocket."""
 
         if websockets is None:  # pragma: no cover - nur Laufzeitumgebung
             raise MCPTransportError(
                 "Python-Paket 'websockets' ist im Calibre-Plugin nicht verfuegbar."
             )
 
+        rid = request_id or "mcp-client"
         url = self._tool_endpoint()
         payload = {
-            "id": request_id,
-            "method": "call_tool",
-            "params": tool_payload,
+            "id": rid,
+            "method": method,
+            "params": params,
         }
 
         async def _do_call() -> Dict[str, Any]:
