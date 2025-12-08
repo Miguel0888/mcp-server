@@ -647,17 +647,49 @@ class RechercheAgent(object):
         primary_keywords = _run_llm(base_prompt)
         self._trace_log(f"Schlagwoerter (Hauptsprache): {primary_keywords!r}")
 
-        # Sekundärsprache (optional)
+        # Sekundärsprache (optional) mit zusaetzlichen Regeln
         secondary_keywords: list[str] = []
         second_enabled = bool(self._pref_value("second_keyword_language_enabled", False))
+        lang_for_trace = None
         if second_enabled:
-            lang = str(self._pref_value("second_keyword_language", "Englisch") or "Englisch").strip()
+            lang_for_trace = str(self._pref_value("second_keyword_language", "Englisch") or "Englisch").strip()
+            second_rules = (
+                "Zusätzliche Regeln NUR für die Suchbegriffe in der zweiten Sprache:\n"
+                "- Liefere NUR Suchbegriffe und Suchphrasen, die fachlich typischerweise in dieser Sprache verwendet werden.\n"
+                "- Vermeide generische Wörter wie 'system', 'data', 'information', 'business', 'use', 'example' ohne klaren fachlichen Bezug.\n"
+                "- Gib KEINE einzelnen Wörter zurück, die auch häufige englische Verben oder Funktionswörter sind "
+                "(z. B. 'can', 'will', 'may', 'must', 'be', 'do', 'have').\n"
+                "- Wenn eine sehr kurze Abkürzung fachlich notwendig ist (z. B. 'CAN', 'LIN', 'MOST'), kombiniere sie IMMER mit einem Kontext:\n"
+                "  - entweder als Phrase, z. B. 'CAN bus', 'CAN bus automotive', 'CAN bus networking'\n"
+                "  - oder mit AND, z. B. 'CAN AND vehicle bus systems', 'CAN AND automotive network'.\n"
+                "- Nutze AND nur, um einen Fachbegriff mit einem Kontextbegriff zu verknüpfen. Erzeuge keine langen UND-Ketten.\n"
+                "- Jede Zeile enthält genau EINE Suchphrase.\n"
+                f"- Gib maximal {max_kws} wirklich prägnante Suchphrasen zurück.\n\n"
+            )
+
             second_prompt = (
                 "Dies ist die gleiche Aufgabe, aber bitte liefere die Suchbegriffe explizit "
-                f"in der Sprache: {lang}.\n\n" + base_prompt
+                f"in der Sprache: {lang_for_trace}.\n\n"
+                + second_rules
+                + base_prompt
             )
+
             secondary_keywords = _run_llm(second_prompt)
-            self._trace_log(f"Schlagwoerter ({lang}): {secondary_keywords!r}")
+
+            # Simple safeguard fuer Sekundaersprache: reine Hilfsverben entfernen
+            blocklist = {"can", "will", "may", "must", "be", "do", "have"}
+            cleaned_secondary: list[str] = []
+            for kw in secondary_keywords:
+                if not kw:
+                    continue
+                tokens = [t for t in kw.split() if t]
+                if len(tokens) == 1 and tokens[0].lower() in blocklist:
+                    # Skip pure helper verb from second language
+                    continue
+                cleaned_secondary.append(kw)
+            secondary_keywords = cleaned_secondary
+
+            self._trace_log(f"Schlagwoerter ({lang_for_trace}): {secondary_keywords!r}")
 
         return primary_keywords, secondary_keywords
 
