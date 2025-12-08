@@ -76,20 +76,17 @@ class RechercheAgent(object):
 
     # ------------------------------------------------------------------ Public API
 
-    def answer_question(self, question: str) -> str:
-        """Vollständigen Recherche-Workflow ausführen und LLM-Antwort zurückgeben.
+    def answer_with_sources(self, question: str) -> Tuple[str, List[EnrichedHit]]:
+        """Vollstaendigen Recherche-Workflow ausfuehren und sowohl LLM-Antwort
+        als auch die angereicherten Treffer (mit Excerpts) zurueckgeben.
 
-        Workflow:
-        1. Mehrstufige Volltextsuche via MCP-Tools ausführen und Treffer sammeln
-           (mindestens eine einfache Kernbegriff-Suche, optional weitere,
-           KI-verfeinerte Runden).
-        2. Ausgewählte Treffer mit Excerpts anreichern
-        3. Prompt auf Basis der Treffer bauen
-        4. LLM mit dem Prompt abfragen
+        Diese Methode ist die neue Hauptschnittstelle fuer das UI. Die
+        bisherige answer_question bleibt als Wrapper fuer die reine
+        Textantwort erhalten.
         """
         question = (question or "").strip()
         if not question:
-            return ""
+            return "", []
 
         log.info("Recherche-Agent gestartet: %s", question)
 
@@ -108,20 +105,11 @@ class RechercheAgent(object):
 
             for round_index in range(max_rounds):
                 if round_index == 0:
-                    # Runde 1: einfache, breit gefasste Kernbegriffe ohne
-                    # komplexe Planner-Logik. Hier nutzen wir nur den
-                    # Schlagwort-Extractor auf der effektiven Frage und
-                    # bauen daraus mehrere einfache Queries.
+                    # Runde 1: einfache Kernbegriffe
                     core_keywords = self._extract_keywords(effective_question)
                     if not core_keywords:
                         core_keywords = [effective_question]
 
-                    # Wenn die KI eine einzige Wortliste geliefert hat
-                    # (z. B. "hacking cyberangriffe sicherheit ..."), splitten
-                    # wir diese in Tokens und bauen fuer jedes Token eine
-                    # eigene Query. Das wirkt wie eine OR-Suche ueber
-                    # Einzelbegriffe im FT-Backend und vermeidet zu enge
-                    # Multi-Wort-Phrasen.
                     queries: List[str] = []
                     if len(core_keywords) == 1:
                         first = core_keywords[0]
@@ -131,15 +119,12 @@ class RechercheAgent(object):
                                 if tok not in queries:
                                     queries.append(tok)
                         else:
-                            queries = core_keywords[:]  # ein einzelner Begriff
+                            queries = core_keywords[:]
                     else:
-                        # Mehrere vom LLM gelieferte Phrasen: jede als eigene Query
                         queries = [q for q in core_keywords if q]
 
                     self._trace_log(f"Suchrunde 1 (Kernbegriffe): {queries!r}")
                 else:
-                    # Folge-Runden: Planner/Refinement verwenden, um gezieltere
-                    # Queries aus bisherigen Treffern/Frage zu erzeugen.
                     refined = self._refine_search_queries(
                         original_question=question,
                         effective_question=effective_question,
@@ -151,11 +136,9 @@ class RechercheAgent(object):
                     queries = refined
                     self._trace_log(f"Suchrunde {round_index+1} (Refinement): {queries!r}")
 
-                # Queries aus dieser Runde ausführen und Treffer sammeln
                 round_hits = self._run_search_plan(queries)
                 all_queries.extend(queries)
 
-                # Deduplizierung anhand (book_id, isbn)
                 seen_ids: Set[Tuple[Any, Any]] = set(
                     (h.book_id, h.isbn) for h in all_hits
                 )
@@ -172,7 +155,7 @@ class RechercheAgent(object):
                     break
 
             if not all_hits:
-                return "System: Keine passenden Treffer im MCP-Server gefunden."
+                return "System: Keine passenden Treffer im MCP-Server gefunden.", []
 
             enriched_hits = self._enrich_hits_with_excerpts(all_hits)
             # Session-State aktualisieren
@@ -180,10 +163,16 @@ class RechercheAgent(object):
             self._last_hits = enriched_hits
         except MCPTransportError as exc:
             log.error("MCP-Workflow fehlgeschlagen: %s", exc)
-            return f"System: Recherche via MCP fehlgeschlagen: {exc}"
+            return f"System: Recherche via MCP fehlgeschlagen: {exc}", []
 
         prompt = self._build_prompt(question, enriched_hits)
-        return self._ask_llm(prompt)
+        answer_text = self._ask_llm(prompt)
+        return answer_text, enriched_hits
+
+    def answer_question(self, question: str) -> str:
+        """Rueckwaerts-kompatible API: nur den Antworttext liefern."""
+        answer, _hits = self.answer_with_sources(question)
+        return answer
 
     def _resolve_effective_question(self, question: str) -> str:
         """Erweitere sehr kurze Nachfragen um Kontext der letzten Frage.

@@ -45,7 +45,7 @@ from qt.core import (
 
 from calibre_plugins.mcp_server_recherche.config import prefs
 from calibre_plugins.mcp_server_recherche.provider_client import ChatProviderClient
-from calibre_plugins.mcp_server_recherche.recherche_agent import RechercheAgent
+from calibre_plugins.mcp_server_recherche.recherche_agent import RechercheAgent, EnrichedHit
 
 
 log = logging.getLogger(__name__)
@@ -723,6 +723,9 @@ class MCPServerRechercheDialog(QDialog):
         self._enqueue_status('Starte Recherche uebers MCP-Backend ...')
 
         self._agent_thread = QThread(self)
+        # AgentWorker soll jetzt answer_with_sources aufrufen; zur
+        # Vereinfachung uebergeben wir weiterhin nur die Frage und
+        # interpretieren das Ergebnis in _on_agent_finished.
         self._agent_worker = AgentWorker(self.agent, text)
         self._agent_worker.moveToThread(self._agent_thread)
 
@@ -736,8 +739,38 @@ class MCPServerRechercheDialog(QDialog):
 
         self._agent_thread.start()
 
-    def _on_agent_finished(self, response: str) -> None:
-        """Wird im UI-Thread aufgerufen, wenn der Agent fertig ist."""
+    def _on_agent_finished(self, response_with_sources: str | tuple) -> None:
+        """Wird im UI-Thread aufgerufen, wenn der Agent fertig ist.
+
+        Der Agent liefert jetzt ueber answer_with_sources sowohl den
+        Antworttext als auch die Trefferliste. Zur Rueckwaertskompatibilitaet
+        akzeptieren wir hier aber weiterhin reine Textantworten.
+        """
+        # Rueckwaertskompatible Entpacklogik
+        if isinstance(response_with_sources, tuple):
+            response, hits = response_with_sources
+        else:
+            response, hits = response_with_sources, []
+
+        # Quellenpanel aktualisieren, wenn Hits vorhanden sind
+        try:
+            if hits:
+                source_items = []
+                for eh in hits:
+                    # EnrichedHit aus recherche_agent
+                    if isinstance(eh, EnrichedHit):
+                        hit = eh.hit
+                        source_items.append({
+                            "book_id": hit.book_id,
+                            "title": hit.title,
+                            "isbn": hit.isbn,
+                            "excerpt": eh.excerpt_text or hit.snippet or "",
+                        })
+                if source_items:
+                    self.update_sources(source_items)
+        except Exception:
+            log.exception("Failed to update sources panel from agent hits")
+
         if response:
             if self._current_ai_message is not None:
                 self._current_ai_message.set_message_text(response)
