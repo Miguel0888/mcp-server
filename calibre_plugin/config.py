@@ -174,9 +174,14 @@ class MCPServerRechercheConfigWidget(QWidget):
             self.library_edit.setText(path)
 
     def choose_python(self):
-        path, _ = QFileDialog.getOpenFileName(self, _('Python-Interpreter waehlen'), self.python_edit.text() or '')
-        if path:
-            self.python_edit.setText(path)
+        file_path, selected_filter = QFileDialog.getOpenFileName(
+            self,
+            _('Python-Interpreter waehlen'),
+            self.python_edit.text() or '',
+            _('Python (*.exe *.bat *.cmd);;Alle Dateien (*.*)')
+        )
+        if file_path:
+            self.python_edit.setText(file_path)
 
     def _library_mode_changed(self, state):
         prefs['use_active_library'] = bool(state)
