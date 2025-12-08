@@ -210,13 +210,13 @@ class RechercheAgent(object):
         return hits
 
     def _wrap_arguments(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Passe Argument-Struktur an das gemeldete input_schema an."""
-        schema_entry = self._tool_schemas.get(tool_name) or {}
-        input_schema = schema_entry.get("input_schema") or {}
-        props = input_schema.get("properties") or {}
+        """Passe Argument-Struktur an das gemeldete input_schema an.
 
-        if "input" in props and list(props.keys()) == ["input"]:
-            return {"input": arguments}
+        Aktuell werden FastMCP-Tools so registriert, dass die Signatur bereits
+        ein einzelnes Pydantic-Modell als Parameter nutzt (z. B. FulltextSearchInput),
+        FastMCP wickelt die Eingabe passend, daher senden wir hier direkt
+        das arguments-Dict ohne weitere "input"-Verschachtelung.
+        """
         return arguments
 
     def _extract_hits_from_content(self, content: Any) -> List[Dict[str, Any]]:
