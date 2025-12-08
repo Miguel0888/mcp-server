@@ -54,7 +54,7 @@ log = logging.getLogger(__name__)
 class AgentWorker(QObject):
     """Worker-Objekt, das den RechercheAgent im Hintergrund ausfuehrt."""
 
-    finished = pyqtSignal(str)
+    finished = pyqtSignal(object)
     failed = pyqtSignal(str)
 
     def __init__(self, agent: RechercheAgent, question: str, parent: QObject | None = None):
@@ -64,11 +64,13 @@ class AgentWorker(QObject):
 
     def run(self) -> None:
         try:
-            response = self._agent.answer_question(self._question)
+            # Liefere Antworttext und EnrichedHits, damit das UI
+            # parallel die Quellen anzeigen kann.
+            response = self._agent.answer_with_sources(self._question)
         except Exception as exc:
             self.failed.emit(str(exc))
         else:
-            self.finished.emit(response or "")
+            self.finished.emit(response)
 
 
 class ChatMessageWidget(QFrame):
@@ -925,10 +927,11 @@ class MCPServerRechercheDialog(QDialog):
             self.sources_layout.addStretch(1)
             return
 
-        # Fuer jeden Treffer ein kleines Panel mit Titel, ISBN, Excerpt-Vorschau
+        # Fuer jeden Treffer ein Panel mit Titel, ISBN, Excerpt-Vorschau
+        # und aufklappbarem Volltext.
         for hit in self._source_hits:
-            w = QWidget(self.sources_panel)
-            lay = QVBoxLayout(w)
+            container = QWidget(self.sources_panel)
+            lay = QVBoxLayout(container)
             lay.setContentsMargins(4, 4, 4, 4)
             lay.setSpacing(2)
 
@@ -937,30 +940,58 @@ class MCPServerRechercheDialog(QDialog):
             book_id = hit.get('book_id')
 
             header_row = QHBoxLayout()
-            header_label = QLabel(f"{title}", w)
+            header_label = QLabel(f"{title}", container)
             header_label.setStyleSheet('font-weight: bold;')
             header_row.addWidget(header_label)
             if isbn:
-                header_row.addWidget(QLabel(f"ISBN: {isbn}", w))
+                header_row.addWidget(QLabel(f"ISBN: {isbn}", container))
             header_row.addStretch(1)
-            # Klickbarer Button zum Markieren im Calibre-Hauptfenster
-            mark_btn = QToolButton(w)
+            mark_btn = QToolButton(container)
             mark_btn.setText('☆')
             mark_btn.setCheckable(True)
             mark_btn.clicked.connect(lambda checked, bid=book_id, btn=mark_btn: self._toggle_mark_book(bid, btn, checked))
             header_row.addWidget(mark_btn)
             lay.addLayout(header_row)
 
-            # Einfaches Excerpt-Preview, spaeter ggf. mit Aufklappfunktion
-            excerpt = (hit.get('excerpt') or '').strip()
-            if excerpt:
-                preview_lines = '\n'.join(excerpt.splitlines()[:3])
-                preview_label = QLabel(preview_lines, w)
+            excerpt_full = (hit.get('excerpt') or '').strip()
+            if excerpt_full:
+                # Preview (erste Zeilen)
+                preview_lines = '\n'.join(excerpt_full.splitlines()[:3])
+                preview_label = QLabel(preview_lines, container)
                 preview_label.setStyleSheet('font-size: 10px; color: #555;')
                 preview_label.setWordWrap(True)
                 lay.addWidget(preview_label)
 
-            self.sources_layout.addWidget(w)
+                # Aufklappbarer Voll-Excerpt
+                toggle_row = QHBoxLayout()
+                toggle_row.setContentsMargins(0, 0, 0, 0)
+                toggle_row.setSpacing(2)
+                toggle_btn = QToolButton(container)
+                toggle_btn.setCheckable(True)
+                toggle_btn.setArrowType(Qt.RightArrow)
+                toggle_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+                toggle_row.addWidget(toggle_btn)
+                desc_label = QLabel('Auszug anzeigen', container)
+                desc_label.setStyleSheet('font-size: 9px; color: #555;')
+                toggle_row.addWidget(desc_label)
+                toggle_row.addStretch(1)
+                lay.addLayout(toggle_row)
+
+                full_label = QTextEdit(container)
+                full_label.setReadOnly(True)
+                full_label.setPlainText(excerpt_full)
+                full_label.setVisible(False)
+                full_label.setStyleSheet('font-size: 10px; color: #555;')
+                full_label.setMaximumHeight(120)
+                lay.addWidget(full_label)
+
+                def _toggle_full(checked: bool, widget=full_label, btn=toggle_btn):
+                    widget.setVisible(checked)
+                    btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+
+                toggle_btn.toggled.connect(_toggle_full)
+
+            self.sources_layout.addWidget(container)
 
         self.sources_layout.addStretch(1)
 
