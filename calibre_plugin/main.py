@@ -105,6 +105,9 @@ class MCPServerRechercheDialog(QDialog):
         self.setWindowIcon(icon)
         self.resize(700, 500)
 
+        self.calibre_library_path = self._detect_calibre_library()
+        log.info("Detected Calibre library path: %s", self.calibre_library_path)
+
     # ------------------------------------------------------------------ UI
 
     def open_settings(self):
@@ -124,22 +127,33 @@ class MCPServerRechercheDialog(QDialog):
         else:
             self._start_server()
 
-    def _start_server(self):
-        if self.server_process and self.server_process.poll() is None:
-            self.chat_view.append('System: MCP Server laeuft bereits.')
-            return
+    def _detect_calibre_library(self) -> str:
+        path = ""
+        try:
+            if hasattr(self.db, 'library_path') and self.db.library_path:
+                path = self.db.library_path
+            elif hasattr(self.db, 'new_api') and getattr(self.db.new_api, 'library_path', None):
+                path = self.db.new_api.library_path
+        except Exception as exc:
+            log.exception("Could not detect calibre library path: %s", exc)
+        return path or ""
 
+    def _start_server(self):
         host = (prefs['server_host'] or '127.0.0.1').strip() or '127.0.0.1'
         try:
             port = int((prefs['server_port'] or '8765').strip() or '8765')
         except ValueError:
             port = 8765
 
-        library_path = prefs['library_path'].strip()
+        library_override = prefs['library_path'].strip()
+        if library_override:
+            library_path = library_override
+            source = 'prefs'
+        else:
+            library_path = self.calibre_library_path
+            source = 'current_db'
         if not library_path:
-            library_path = getattr(self.db, 'library_path', '') or ''
-        if not library_path:
-            self.chat_view.append('System: Kein Calibre-Bibliothekspfad konfiguriert.')
+            self.chat_view.append('System: Kein Calibre-Bibliothekspfad konfiguriert und kein aktuelle Bibliothek gefunden.')
             return
 
         env = os.environ.copy()
@@ -147,21 +161,40 @@ class MCPServerRechercheDialog(QDialog):
         env['MCP_SERVER_PORT'] = str(port)
         env['CALIBRE_LIBRARY_PATH'] = library_path
 
+        log.info(
+            "Starting MCP server: host=%s port=%s library_source=%s library=%r env=%s",
+            host,
+            port,
+            source,
+            library_path,
+            {k: env.get(k) for k in ('MCP_SERVER_HOST', 'MCP_SERVER_PORT', 'CALIBRE_LIBRARY_PATH')},
+        )
+
         cmd = [sys.executable, '-m', 'calibre_mcp_server.websocket_server']
+        log.info("Command: %s", cmd)
 
         try:
             self.server_process = subprocess.Popen(
                 cmd,
                 env=env,
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding='utf-8',
             )
         except OSError as exc:
+            log.exception("Failed to start MCP server process")
             self.chat_view.append(f'System: Start fehlgeschlagen ({exc}).')
             self.server_process = None
             return
+
+        def _consume_stream(stream, label):
+            if not stream:
+                return ''
+            data = stream.read()
+            if data:
+                log.info("Server %s: %s", label, data.strip())
+            return data
 
         # Wait briefly for immediate failure
         try:
@@ -170,11 +203,13 @@ class MCPServerRechercheDialog(QDialog):
             code = None
 
         if code is not None:
-            details = self._drain_process_stderr(self.server_process)
+            stderr = _consume_stream(self.server_process.stderr, 'stderr')
+            stdout = _consume_stream(self.server_process.stdout, 'stdout')
             self.server_process = None
             self.chat_view.append(f'System: MCP Server konnte nicht starten (Code {code}).')
-            if details:
-                self.chat_view.append(f'Details: {details}')
+            for label, content in [('stderr', stderr), ('stdout', stdout)]:
+                if content:
+                    self.chat_view.append(f'{label}: {content.strip()[:500]}')
             return
 
         self.server_running = True
@@ -192,9 +227,12 @@ class MCPServerRechercheDialog(QDialog):
             except subprocess.TimeoutExpired:
                 proc.kill()
         if proc:
-            details = self._drain_process_stderr(proc)
-            if details and self.server_running:
-                self.chat_view.append(f'System: Server-Log: {details}')
+            stderr = proc.stderr.read() if proc.stderr else ''
+            stdout = proc.stdout.read() if proc.stdout else ''
+            if stderr:
+                self.chat_view.append(f'stderr: {stderr.strip()[:500]}')
+            if stdout:
+                self.chat_view.append(f'stdout: {stdout.strip()[:500]}')
         self.server_running = False
         self.server_button.setText('Server starten')
         self.chat_view.append('System: MCP Server wurde gestoppt.')

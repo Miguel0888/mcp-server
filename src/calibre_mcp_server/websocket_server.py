@@ -8,6 +8,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import sys
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import websockets
@@ -25,12 +28,28 @@ from fastmcp.tools.tool import Tool
 log = logging.getLogger(__name__)
 
 
+def log_startup_context() -> None:
+    env_snapshot = {
+        "CALIBRE_LIBRARY_PATH": os.environ.get("CALIBRE_LIBRARY_PATH"),
+        "CALIBRE_CONFIG_DIRECTORY": os.environ.get("CALIBRE_CONFIG_DIRECTORY"),
+    }
+    log.info(
+        "WebSocket server startup: python=%s argv=%s cwd=%s env=%s",
+        sys.executable,
+        sys.argv,
+        os.getcwd(),
+        env_snapshot,
+    )
+
+
 class MCPWebSocketServer:
     """Very small MCP-inspired WebSocket facade for FastMCP tools."""
 
     def __init__(self, config: ServerConfig):
         self.config = config
+        self.library_path = config.calibre_library_path
         self._server: Optional[asyncio.AbstractServer] = None
+        self._log_library_details(self.library_path)
         self._mcp = self._build_fastmcp(config)
         self._tool_manager = self._mcp._tool_manager  # noqa: SLF001
 
@@ -42,6 +61,17 @@ class MCPWebSocketServer:
         register_ft_search_tool(mcp, registry)
         register_excerpt_tool(mcp, registry)
         return mcp
+
+    def _log_library_details(self, library_path: str) -> None:
+        metadata_path = Path(library_path) / "metadata.db"
+        log.info(
+            "Calibre library setup: path=%r exists=%s isdir=%s metadata=%s metadata_exists=%s",
+            library_path,
+            os.path.exists(library_path),
+            os.path.isdir(library_path),
+            metadata_path,
+            metadata_path.exists(),
+        )
 
     def _list_tools(self) -> Dict[str, Any]:
         tools = []
@@ -128,6 +158,7 @@ async def run_async(config: Optional[ServerConfig] = None) -> None:
 
 def run_from_env() -> None:
     cfg = load_config_from_env()
+    log_startup_context()
     try:
         asyncio.run(run_async(cfg))
     except RuntimeError as exc:

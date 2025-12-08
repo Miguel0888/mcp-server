@@ -2,9 +2,12 @@ from typing import List, Optional
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
+import logging
 
 from ..core.models import FulltextHit
 from ..core.plugin_registry import PluginRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class FulltextSearchInput(BaseModel):
@@ -38,14 +41,25 @@ def register_ft_search_tool(mcp: FastMCP, registry: PluginRegistry) -> None:
 
     @mcp.tool()
     def calibre_fulltext_search(input: FulltextSearchInput) -> FulltextSearchOutput:
-        """Search Calibre full-text index for a query and return matching snippets."""
+        logger.info(
+            "FT search request: query=%r limit=%s library=%r",
+            input.query,
+            input.limit,
+            registry.service._root,
+        )
         try:
             raw_hits: List[FulltextHit] = registry.service.fulltext_search(
                 query=input.query,
                 limit=input.limit,
             )
             processed_hits = registry.apply_fulltext_plugins(raw_hits)
+        except FileNotFoundError as exc:
+            logger.exception("metadata.db missing for library %r", registry.service._root)
+            raise RuntimeError(
+                f"Full-text search failed: FileNotFoundError: {exc}"
+            ) from exc
         except Exception as exc:  # pylint: disable=broad-except
+            logger.exception("Full-text search failed for query %r", input.query)
             raise RuntimeError(
                 f"Full-text search failed: {type(exc).__name__}: {exc}"
             ) from exc
