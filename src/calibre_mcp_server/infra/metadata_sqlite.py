@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 from ..core.models import FulltextHit
@@ -13,13 +14,25 @@ class MetadataRepository(object):
     """
 
     def __init__(self, library_root: str):
+        self._root = library_root
         self._db_path = os.path.join(library_root, "metadata.db")
 
     def _connect(self) -> sqlite3.Connection:
         """Open a new read-only SQLite connection to metadata.db."""
+        db_file = Path(self._db_path)
+        if not db_file.exists():
+            raise FileNotFoundError(
+                f"metadata.db wurde nicht gefunden unter: {db_file}. "
+                "Bitte CALIBRE_LIBRARY_PATH korrekt setzen."
+            )
         # Use URI mode to enforce read-only access.
         uri = f"file:{self._db_path}?mode=ro"
-        return sqlite3.connect(uri, uri=True)
+        try:
+            return sqlite3.connect(uri, uri=True)
+        except sqlite3.OperationalError as exc:  # pragma: no cover
+            raise RuntimeError(
+                f"metadata.db konnte nicht geoeffnet werden ({db_file}): {exc}"
+            ) from exc
 
     def search_fulltext(self, query: str, limit: int) -> List[FulltextHit]:
         """Search in title, ISBN and comments using simple LIKE matching.
