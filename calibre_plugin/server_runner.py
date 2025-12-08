@@ -1,41 +1,14 @@
 import sys
 from pathlib import Path
 
+PLUGIN_DIR = Path(__file__).resolve().parent
+SITE_PACKAGES = PLUGIN_DIR / 'site-packages'
+if SITE_PACKAGES.exists():
+    sys.path.insert(0, str(SITE_PACKAGES))
+
 import asyncio
 import threading
 from typing import Optional
-
-
-def _install_site_packages() -> None:
-    """
-    Ensure that the bundled 'site-packages' directory is on sys.path.
-
-    This must work in two Szenarien:
-    - Entwicklermodus (Plugin als normaler Ordner):  <plugin_dir>/site-packages
-    - Calibre-Plugin als ZIP:  <plugin.zip>/site-packages  (zip-subdir Pfad)
-    """
-    plugin_file = Path(__file__).resolve()
-    plugin_str = str(plugin_file)
-
-    candidate_paths = []
-
-    # 1) ZIP-Plugin-Fall: .../mcp_server_recherche.zip/...
-    if ".zip" in plugin_str:
-        zip_prefix, _, _ = plugin_str.partition(".zip")
-        zip_path = zip_prefix + ".zip"
-        # zip-subdir Pfad: <zip>.zip/site-packages
-        candidate_paths.append(zip_path + "/site-packages")
-
-    # 2) Normaler Ordner-Fall: <plugin_dir>/site-packages
-    plugin_dir = plugin_file.parent
-    candidate_paths.append(str(plugin_dir / "site-packages"))
-
-    for p in candidate_paths:
-        if p and p not in sys.path:
-            sys.path.insert(0, p)
-
-
-_install_site_packages()
 
 
 class MCPServerThread(threading.Thread):
@@ -61,7 +34,6 @@ class MCPServerThread(threading.Thread):
             from calibre_mcp_server.websocket_server import MCPWebSocketServer
         except ModuleNotFoundError as exc:  # pylint: disable=broad-except
             missing = exc.name or 'unbekannt'
-            # This is what you currently siehst in der UI:
             self.last_error = (
                 f"Abhaengigkeit '{missing}' fehlt. Bitte websockets/fastmcp in das Plugin "
                 "bundle oder in Calibre installieren."
@@ -92,7 +64,7 @@ class MCPServerThread(threading.Thread):
             try:
                 if self.loop and self.loop.is_running():
                     self.loop.stop()
-            except Exception:
+            except Exception:  # pragma: no cover
                 pass
             if self.loop:
                 self.loop.close()
