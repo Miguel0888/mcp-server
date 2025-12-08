@@ -61,11 +61,8 @@ prefs.defaults['context_influence'] = 50
 # Benutzeranpassbare Prompt-Zusaetze
 prefs.defaults['query_planner_hint'] = ''
 prefs.defaults['answer_style_hint'] = ''
-
-# Schlagwort-/Keyword-Suche
-prefs.defaults['use_llm_query_planning'] = True
-prefs.defaults['max_search_keywords'] = 5
-prefs.defaults['keyword_boolean_operator'] = 'AND'  # AND oder OR
+# Hint fuer Schlagwort-Extraktion
+prefs.defaults['keyword_extraction_hint'] = ''
 
 ensure_model_prefs(prefs)
 
@@ -190,6 +187,13 @@ class MCPServerRechercheConfigWidget(QWidget):
             _('Optionaler Zusatz fuer die Antwort, z. B. "erklaere verstaendlich fuer Studierende"')
         )
         tuning_form.addRow(_('Hinweis fuer Antwort-Prompt:'), self.answer_style_hint_edit)
+
+        self.keyword_extraction_hint_edit = QLineEdit(self)
+        self.keyword_extraction_hint_edit.setText(prefs.get('keyword_extraction_hint', ''))
+        self.keyword_extraction_hint_edit.setPlaceholderText(
+            _('Optionaler Zusatz fuer die Schlagwort-Extraktion, z. B. "nur deutsche Fachbegriffe verwenden"')
+        )
+        tuning_form.addRow(_('Hinweis fuer Schlagwort-Prompt:'), self.keyword_extraction_hint_edit)
 
         # Info label
         info = QLabel(
@@ -349,6 +353,7 @@ class MCPServerRechercheConfigWidget(QWidget):
         prefs['context_influence'] = max(0, min(ci, 100))
         prefs['query_planner_hint'] = self.query_planner_hint_edit.text().strip()
         prefs['answer_style_hint'] = self.answer_style_hint_edit.text().strip()
+        prefs['keyword_extraction_hint'] = self.keyword_extraction_hint_edit.text().strip()
 
         # Suchmodus
         prefs['use_llm_query_planning'] = self.use_llm_planning_checkbox.isChecked()
