@@ -59,6 +59,9 @@ class RechercheAgent(object):
         self.request_timeout = int(self.prefs.get("request_timeout", 15))
         # Cache der vom Server gemeldeten Tools (name -> schema)
         self._tool_schemas: Dict[str, Dict[str, Any]] = {}
+        # Session-State fuer Folgefragen
+        self._last_question: Optional[str] = None
+        self._last_hits: List[EnrichedHit] = []
 
     def _trace_log(self, message: str) -> None:
         """Optionaler Hook, um Tool-Nutzung ins UI zu loggen."""
@@ -89,18 +92,40 @@ class RechercheAgent(object):
         try:
             self._ensure_tools_cached()
 
-            search_queries = self._plan_search_queries(question)
+            effective_question = self._resolve_effective_question(question)
+            search_queries = self._plan_search_queries(effective_question)
             search_hits = self._run_search_plan(search_queries)
             if not search_hits:
                 return "System: Keine passenden Treffer im MCP-Server gefunden."
 
             enriched_hits = self._enrich_hits_with_excerpts(search_hits)
+            # Session-State aktualisieren
+            self._last_question = question
+            self._last_hits = enriched_hits
         except MCPTransportError as exc:
             log.error("MCP-Workflow fehlgeschlagen: %s", exc)
             return f"System: Recherche via MCP fehlgeschlagen: {exc}"
 
         prompt = self._build_prompt(question, enriched_hits)
         return self._ask_llm(prompt)
+
+    def _resolve_effective_question(self, question: str) -> str:
+        """Erweitere sehr kurze Nachfragen um Kontext der letzten Frage.
+
+        Beispiel: letzte Frage "Welche Fahrzeug-Bussysteme gibt es?",
+        neue Frage "Was genau ist LIN" -> kombiniert zu
+        "Was genau ist LIN im Kontext von: Welche Fahrzeug-Bussysteme gibt es?".
+        """
+        base = (question or "").strip()
+        if not self._last_question:
+            return base
+
+        # Heuristik: sehr kurze Fragen (<= 6 Woerter) als Nachfrage behandeln
+        if len(base.split()) <= 6:
+            combined = f"{base} (im Kontext von: {self._last_question})"
+            self._trace_log(f"Kombinierte Nachfrage-Frage: {combined!r}")
+            return combined
+        return base
 
     # ------------------ Tool discovery ------------------
 
@@ -140,6 +165,7 @@ class RechercheAgent(object):
         """
         use_llm = bool(self.prefs.get('use_llm_query_planning', True))
         raw_queries: List[str] = []
+        effective_question = question
 
         if use_llm:
             planning_prompt = (

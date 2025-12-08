@@ -74,6 +74,11 @@ class MCPServerRechercheDialog(QDialog):
         self.server_button.clicked.connect(self.toggle_server)
         top_row.addWidget(self.server_button)
 
+        # Neuer Chat-Button: Verlauf loeschen & Agent-Session zuruecksetzen
+        self.newchat_button = QPushButton('Neuer Chat', self)
+        self.newchat_button.clicked.connect(self.new_chat)
+        top_row.addWidget(self.newchat_button)
+
         # Debug-Checkbox fuer Tool-Trace
         self.debug_checkbox = QCheckBox('Tool-Details anzeigen', self)
         top_row.addWidget(self.debug_checkbox)
@@ -92,6 +97,7 @@ class MCPServerRechercheDialog(QDialog):
         # --- Chat view -----------------------------------------------------
         self.chat_view = QTextEdit(self)
         self.chat_view.setReadOnly(True)
+        # Spaeter koennen wir hier HTML/Markdown anzeigen; derzeit einfache Plain-Append.
         main_layout.addWidget(self.chat_view)
 
         # --- Input row -----------------------------------------------------
@@ -309,6 +315,13 @@ class MCPServerRechercheDialog(QDialog):
 
     # ------------------------------------------------------------------ Chat
 
+    def new_chat(self):
+        """Loesche aktuellen Chatverlauf und setze Agent-Session zurueck."""
+        self.chat_view.clear()
+        # Agent besitzt Session-Zustand (z. B. letzte Frage/ Treffer); durch Neuinstanzierung zuruecksetzen
+        self.agent = RechercheAgent(prefs, trace_callback=self._append_trace)
+        self.chat_view.append('System: Neuer Chat gestartet.')
+
     def send_message(self):
         if self.pending_request:
             return
@@ -317,7 +330,8 @@ class MCPServerRechercheDialog(QDialog):
         if not text:
             return
 
-        self.chat_view.append(f'Du: {text}')
+        # Einfache Markdown-artige Darstellung: Nutzer fett markieren
+        self.chat_view.append(f'**Du:** {text}')
         self.input_edit.clear()
         self._toggle_send_state(True)
 
@@ -326,19 +340,20 @@ class MCPServerRechercheDialog(QDialog):
     def _process_chat(self, text: str):
         try:
             # Zwischenstatus: Recherche startet
-            self.chat_view.append('System: Starte Recherche uebers MCP-Backend ...')
+            self.chat_view.append('_System: Starte Recherche uebers MCP-Backend ..._')
 
             response = self.agent.answer_question(text)
         except Exception as exc:
             log.exception("Research agent failed")
-            self.chat_view.append(f'System: Fehler in der Recherche-Pipeline: {exc}')
+            self.chat_view.append(f'**System:** Fehler in der Recherche-Pipeline: {exc}')
         else:
             if response:
-                # Vor der AI-Antwort noch einen Trennstrich, falls viele DEBUG-Zeilen dazwischen liegen
+                # Trennstrich
                 self.chat_view.append('---')
-                self.chat_view.append(f'AI: {response}')
+                # Antwort als Markdown-artiger Block anzeigen
+                self.chat_view.append(f'**AI:**\n{response}')
             else:
-                self.chat_view.append('System: Keine Antwort vom Provider erhalten.')
+                self.chat_view.append('**System:** Keine Antwort vom Provider erhalten.')
         finally:
             self._toggle_send_state(False)
 
