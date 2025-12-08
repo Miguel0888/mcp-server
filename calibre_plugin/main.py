@@ -41,7 +41,6 @@ from qt.core import (
     QThread,
     QObject,
     pyqtSignal,
-    QAbstractScrollArea,
 )
 
 from calibre_plugins.mcp_server_recherche.config import prefs
@@ -157,14 +156,11 @@ class ChatMessageWidget(QFrame):
         # Dokumentgroesse an Inhalt anpassen und daraus eine sinnvolle
         # Widgethoehe ableiten, damit die Box wirklich nur so gross ist
         # wie ihr Inhalt.
-        self.text_browser.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
         doc = self.text_browser.document()
         doc.adjustSize()
         doc_size = doc.size()
-        # Ein klein wenig Padding fuer Zeilenabstand/Margins hinzugeben
         min_height = int(doc_size.height()) + 4
         if min_height < 20:
-            # Sehr kurze Texte (oder leer) nicht zu hoch machen
             min_height = 20
         self.text_browser.setMinimumHeight(min_height)
         self.text_browser.updateGeometry()
