@@ -1,14 +1,20 @@
-# recherche_agent.py
+from __future__ import annotations
 
 import logging
 import json
+import re
 import urllib.request
 import urllib.error
+from typing import Any, Dict, List, Tuple, Set
 
 from calibre_plugins.mcp_server_recherche.config import prefs
 from calibre_plugins.mcp_server_recherche.provider_client import ChatProviderClient
 
 log = logging.getLogger(__name__)
+
+
+class MCPTransportError(RuntimeError):
+    """Raised when the MCP bridge cannot fulfil a request."""
 
 
 class RechercheAgent(object):
@@ -17,92 +23,154 @@ class RechercheAgent(object):
     def __init__(self, prefs_obj):
         self.prefs = prefs_obj
         self.chat_client = ChatProviderClient(self.prefs)
+        self.max_query_variants = 3
+        self.max_hits_per_query = 6
+        self.max_hits_total = 12
+        self.target_sources = 3
+        self.max_excerpts = 4
+        self.max_excerpt_chars = 1200
+        self.context_hit_limit = 8
+        self.request_timeout = 15
 
     def answer_question(self, question):
-        """Run search tools and get a final LLM answer."""
-        # 1) Run fulltext search
-        hits = self._run_fulltext_search(question, max_hits=5)
+        """Run planning, tool orchestration, and summarisation."""
+        question = (question or "").strip()
+        if not question:
+            return ""
 
-        # 2) Optionally fetch excerpts for top hits
-        excerpts = self._fetch_excerpts_for_hits(hits, max_excerpts=3)
+        log.info("Recherche-Agent gestartet: %s", question)
 
-        # 3) Build an enriched prompt
-        prompt = self._build_prompt(question, hits, excerpts)
+        try:
+            queries = self._plan_search_queries(question)
+            hits = self._collect_fulltext_hits(queries)
+            if not hits:
+                return "System: Keine passenden Treffer im MCP-Server gefunden."
+            enriched_hits = self._fetch_excerpts_for_hits(hits)
+        except MCPTransportError as exc:
+            log.error("MCP-Workflow fehlgeschlagen: %s", exc)
+            return f"System: Recherche via MCP fehlgeschlagen: {exc}"
 
-        # 4) Send to LLM
+        prompt = self._build_prompt(question, enriched_hits)
         return self.chat_client.send_chat(prompt)
+
+    # ------------------ Planning helpers ------------------
+
+    def _plan_search_queries(self, question: str) -> List[str]:
+        """Ask the LLM to suggest targeted search queries."""
+        planning_prompt = (
+            "Du hilfst dabei, Fragen anhand einer Calibre-Bibliothek zu beantworten.\n"
+            "Formuliere bis zu drei kurze Suchabfragen (eine pro Zeile).\n"
+            "Die erste Abfrage soll der Originalfrage entsprechen, die folgenden beleuchten andere Aspekte.\n\n"
+            f"Frage:\n{question}\n\n"
+            "Gib nur die Suchabfragen ohne Erklaerungen aus."
+        )
+
+        try:
+            response = self.chat_client.send_chat(planning_prompt)
+            queries = self._extract_queries(response)
+        except Exception as exc:  # noqa: BLE001 - fallback to base question
+            log.warning("LLM-Query-Planung fehlgeschlagen: %s", exc)
+            queries = []
+
+        if not queries:
+            queries = [question]
+        elif question not in queries:
+            queries.insert(0, question)
+
+        return queries[: self.max_query_variants]
+
+    @staticmethod
+    def _extract_queries(raw_response: str) -> List[str]:
+        queries: List[str] = []
+        for line in raw_response.splitlines():
+            cleaned = re.sub(r"^[\-•\d\.)\s]+", "", line.strip())
+            if cleaned and cleaned not in queries:
+                queries.append(cleaned)
+        return queries
 
     # ------------------ MCP tool calls ------------------
 
+    def _collect_fulltext_hits(self, queries: List[str]) -> List[Dict[str, Any]]:
+        """Run the full-text search for each query and aggregate unique hits."""
+        aggregated: List[Dict[str, Any]] = []
+        seen_ids: Set[Tuple[Any, Any]] = set()
+
+        for query in queries:
+            hits = self._run_fulltext_search(query, max_hits=self.max_hits_per_query)
+            log.info("Fulltext-Suche %r lieferte %d Treffer", query, len(hits))
+            for hit in hits:
+                identifier = (hit.get("book_id"), hit.get("isbn"))
+                if identifier in seen_ids:
+                    continue
+                entry = dict(hit)
+                entry.setdefault("origin_query", query)
+                aggregated.append(entry)
+                seen_ids.add(identifier)
+                if len(aggregated) >= self.max_hits_total:
+                    break
+            if len(aggregated) >= self.target_sources:
+                break
+
+        return aggregated[: self.max_hits_total]
+
     def _run_fulltext_search(self, query, max_hits=5):
-        """Call MCP fulltext search tool on the server."""
-        try:
-            host = self.prefs['server_host'] or '127.0.0.1'
-            port = self.prefs['server_port'] or '8765'
-            url = 'http://%s:%s/tools/call' % (host, port)
-
-            payload = {
-                "id": "ft-search-1",
-                "method": "tools.call",
-                "params": {
-                    "name": "calibre_fulltext_search",
-                    "arguments": {"query": query, "limit": max_hits},
-                },
-            }
-
-            data = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(
-                url,
-                data=data,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                raw = resp.read().decode("utf-8")
-            response = json.loads(raw)
-            # Expecting MCP-like result structure
-            result = response.get("result") or {}
-            return result.get("hits", [])
-        except Exception as exc:
-            log.exception("Fulltext search via MCP failed: %s", exc)
-            return []
-
-    def _fetch_excerpts_for_hits(self, hits, max_excerpts=3):
-        """Optionally call an excerpt tool for a couple of top hits."""
-        excerpts = []
-        for hit in hits[:max_excerpts]:
-            book_id = hit.get("book_id")
-            if book_id is None:
-                continue
-            try:
-                excerpt = self._call_excerpt_tool(book_id)
-                if excerpt:
-                    excerpts.append(
-                        {
-                            "book_id": book_id,
-                            "title": hit.get("title", ""),
-                            "excerpt": excerpt,
-                        }
-                    )
-            except Exception:
-                log.exception("Excerpt fetch failed for book_id=%s", book_id)
-        return excerpts
-
-    def _call_excerpt_tool(self, book_id):
-        """Call MCP excerpt tool for a single book."""
-        host = self.prefs['server_host'] or '127.0.0.1'
-        port = self.prefs['server_port'] or '8765'
-        url = 'http://%s:%s/tools/call' % (host, port)
-
         payload = {
-            "id": "excerpt-%s" % book_id,
-            "method": "tools.call",
-            "params": {
-                "name": "calibre_excerpt_by_id",
-                "arguments": {"book_id": book_id, "max_chars": 1200},
+            "name": "calibre_fulltext_search",
+            "arguments": {"query": query, "limit": max_hits},
+        }
+        response = self._call_mcp_tool(payload, request_id="ft-search")
+        result = (response.get("result") or {})
+        hits = result.get("hits")
+        if hits is None and "content" in result:
+            hits = self._extract_hits_from_content(result["content"])
+        return hits or []
+
+    def _fetch_excerpts_for_hits(self, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        enriched: List[Dict[str, Any]] = []
+        excerpt_count = 0
+        for hit in hits:
+            entry = dict(hit)
+            isbn = entry.get("isbn") or entry.get("book_id")
+            if isbn and excerpt_count < self.max_excerpts:
+                try:
+                    excerpt_payload = self._call_excerpt_tool(isbn)
+                except MCPTransportError as exc:
+                    log.warning("Excerpt-Tool fehlgeschlagen fuer ISBN %s: %s", isbn, exc)
+                else:
+                    entry["excerpt"] = excerpt_payload.get("text") or excerpt_payload.get("excerpt") or ""
+                    entry["excerpt_source"] = excerpt_payload.get("source_hint")
+                    excerpt_count += 1
+            enriched.append(entry)
+        return enriched
+
+    def _call_excerpt_tool(self, isbn: str) -> Dict[str, Any]:
+        payload = {
+            "name": "calibre_get_excerpt",
+            "arguments": {
+                "isbn": isbn,
+                "max_chars": self.max_excerpt_chars,
             },
         }
+        response = self._call_mcp_tool(payload, request_id=f"excerpt-{isbn}")
+        result = response.get("result")
+        if not result:
+            raise MCPTransportError("Excerpt-Tool lieferte kein Ergebnis")
+        return result
 
+    def _call_mcp_tool(self, tool_payload: Dict[str, Any], request_id: str) -> Dict[str, Any]:
+        url = self._tool_endpoint()
+        payload = {
+            "id": request_id,
+            "method": "tools.call",
+            "params": tool_payload,
+        }
+        response = self._post_json(url, payload)
+        if "error" in response:
+            message = response["error"].get("message", "Unbekannter MCP-Fehler")
+            raise MCPTransportError(message)
+        return response
+
+    def _post_json(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             url,
@@ -110,47 +178,81 @@ class RechercheAgent(object):
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            raw = resp.read().decode("utf-8")
-        response = json.loads(raw)
-        result = response.get("result") or {}
-        return result.get("excerpt", "")
+        try:
+            with urllib.request.urlopen(req, timeout=self.request_timeout) as resp:
+                raw = resp.read().decode("utf-8")
+        except urllib.error.URLError as exc:  # network boundary
+            raise MCPTransportError(getattr(exc, "reason", str(exc))) from exc
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:  # pragma: no cover - defensive
+            raise MCPTransportError("Antwort des MCP-Servers konnte nicht gelesen werden") from exc
+
+    def _tool_endpoint(self) -> str:
+        host, port = self._server_config()
+        return f"http://{host}:{port}/tools/call"
+
+    def _server_config(self) -> Tuple[str, int]:
+        host = self._pref_value("server_host", "127.0.0.1")
+        port_raw = self._pref_value("server_port", "8765")
+        try:
+            port = int(str(port_raw).strip() or "8765")
+        except (TypeError, ValueError):
+            port = 8765
+        return (str(host).strip() or "127.0.0.1", port)
+
+    def _pref_value(self, key: str, default: Any) -> Any:
+        getter = getattr(self.prefs, "get", None)
+        if callable(getter):
+            value = getter(key, default)
+        else:
+            try:
+                value = self.prefs[key]
+            except Exception:  # noqa: BLE001 - prefs may not implement __getitem__
+                value = default
+        return value if value not in (None, "") else default
 
     # ------------------ Prompt construction ------------------
 
-    def _build_prompt(self, question, hits, excerpts):
-        """Combine user question and MCP search results into one LLM prompt."""
-        context_lines = []
-
-        if hits:
-            context_lines.append("Suchtreffer aus der Calibre-Bibliothek:")
-            for idx, hit in enumerate(hits, start=1):
-                context_lines.append(
-                    "- [%d] %s (ID=%s)" % (
-                        idx,
-                        hit.get("title", "Unbekannter Titel"),
-                        hit.get("book_id", "?"),
-                    )
-                )
-
-        if excerpts:
-            context_lines.append("")
-            context_lines.append("Ausgewaehlte Textauszuege:")
-            for ex in excerpts:
-                context_lines.append(
-                    "Titel: %s (ID=%s)" % (ex.get("title", ""), ex.get("book_id", ""))
-                )
-                context_lines.append(ex.get("excerpt", "")[:1200])
-                context_lines.append("")
-
-        context_block = "\n".join(context_lines) if context_lines else "Keine passenden Treffer gefunden."
+    def _build_prompt(self, question: str, hits: List[Dict[str, Any]]) -> str:
+        if not hits:
+            context_block = "Keine passenden Treffer gefunden."
+        else:
+            lines: List[str] = ["Suchtreffer und Auszuege:"]
+            for idx, hit in enumerate(hits[: self.context_hit_limit], start=1):
+                title = hit.get("title") or "Unbekannter Titel"
+                isbn = hit.get("isbn") or "Unbekannt"
+                lines.append(f"[{idx}] {title} (ISBN: {isbn})")
+                snippet = self._trim_text(hit.get("snippet"))
+                if snippet:
+                    lines.append(f"Snippet: {snippet}")
+                excerpt = self._trim_text(hit.get("excerpt"))
+                if excerpt:
+                    lines.append(f"Excerpt: {excerpt}")
+                origin = hit.get("origin_query")
+                if origin:
+                    lines.append(f"Suchbegriff: {origin}")
+                lines.append("")
+            context_block = "\n".join(lines)
 
         prompt = (
-            "Du bist ein Assistent, der Fragen auf Basis einer Calibre-Bibliothek beantwortet.\n"
-            "Nutze die folgenden Suchtreffer und Auszuege, um die Frage zu beantworten.\n\n"
-            "FRAGE:\n%s\n\n"
-            "KONTEXT AUS DER BIBLIOTHEK:\n%s\n\n"
-            "Antworte strukturiert und erklaere, wie die Treffer zur Antwort beitragen."
-            % (question, context_block)
+            "Du bist ein Recherche-Assistent fuer eine Calibre-Bibliothek.\n"
+            "Nutze ausschliesslich den Kontext unten, antworte in sachlichem Deutsch\n"
+            "und verweise auf Quellen als [Nr] mit ISBN. Trenne klar zwischen Wissen aus\n"
+            "den Treffern und allgemeinem Hintergrund, falls noetig.\n\n"
+            f"FRAGE:\n{question}\n\n"
+            f"KONTEXT AUS DER BIBLIOTHEK:\n{context_block}\n\n"
+            "Gebe einen Bericht mit (1) Zusammenfassung, (2) Relevante Buecher mit Kurznotizen,"
+            " (3) Offene Punkte."
         )
         return prompt
+
+    @staticmethod
+    def _trim_text(text: Any, limit: int = 600) -> str:
+        if not text:
+            return ""
+        cleaned = str(text).strip().replace("\n", " ")
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[: limit - 3] + "..."
+
