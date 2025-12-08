@@ -44,9 +44,10 @@ class EnrichedHit:
 class RechercheAgent(object):
     """Coordinate MCP tools and LLM to answer research questions."""
 
-    def __init__(self, prefs_obj):
+    def __init__(self, prefs_obj, trace_callback=None):
         self.prefs = prefs_obj
         self.chat_client = ChatProviderClient(self.prefs)
+        self._trace = trace_callback
         # Werte aus Preferences mit Defaults lesen
         self.max_query_variants = int(self.prefs.get("max_query_variants", 3))
         self.max_hits_per_query = int(self.prefs.get("max_hits_per_query", 6))
@@ -58,6 +59,14 @@ class RechercheAgent(object):
         self.request_timeout = int(self.prefs.get("request_timeout", 15))
         # Cache der vom Server gemeldeten Tools (name -> schema)
         self._tool_schemas: Dict[str, Dict[str, Any]] = {}
+
+    def _trace_log(self, message: str) -> None:
+        """Optionaler Hook, um Tool-Nutzung ins UI zu loggen."""
+        if callable(self._trace):
+            try:
+                self._trace(message)
+            except Exception:  # pragma: no cover - UI-Fehler sollen nie den Agenten crashen
+                log.exception("Trace callback failed")
 
     # ------------------------------------------------------------------ Public API
 
@@ -188,6 +197,7 @@ class RechercheAgent(object):
             "name": FULLTEXT_TOOL,
             "arguments": self._wrap_arguments(FULLTEXT_TOOL, arguments),
         }
+        self._trace_log(f"Toolcall {FULLTEXT_TOOL}: query={query!r}, limit={max_hits}")
         response = self._call_mcp("call_tool", params=payload, request_id="ft-search")
         result = (response.get("result") or {})
         raw_hits = result.get("hits")
@@ -281,6 +291,7 @@ class RechercheAgent(object):
             "isbn": isbn,
             "max_chars": self.max_excerpt_chars,
         }
+        self._trace_log(f"Toolcall {EXCERPT_TOOL}: isbn={isbn!r}, max_chars={self.max_excerpt_chars}")
         payload = {
             "name": EXCERPT_TOOL,
             "arguments": self._wrap_arguments(EXCERPT_TOOL, arguments),
@@ -312,6 +323,7 @@ class RechercheAgent(object):
             "method": method,
             "params": params,
         }
+        self._trace_log(f"MCP -> {method}: {json.dumps(payload, ensure_ascii=False)}")
 
         async def _do_call() -> Dict[str, Any]:
             data = json.dumps(payload)
@@ -339,6 +351,7 @@ class RechercheAgent(object):
                 "Konnte keine WebSocket-Verbindung zum MCP-Server herstellen (Eventloop-Konflikt)."
             ) from exc
 
+        self._trace_log(f"MCP <- {method}: {json.dumps(response, ensure_ascii=False)[:500]}")
         if "error" in response:
             message = response["error"].get("message", "Unbekannter MCP-Fehler")
             raise MCPTransportError(message)

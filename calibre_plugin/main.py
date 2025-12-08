@@ -28,6 +28,7 @@ from qt.core import (
     QTextEdit,
     QLineEdit,
     QTimer,
+    QCheckBox,
 )
 
 from calibre_plugins.mcp_server_recherche.config import prefs
@@ -51,7 +52,8 @@ class MCPServerRechercheDialog(QDialog):
 
         self.server_running = False
         self.server_process: subprocess.Popen | None = None
-        self.agent = RechercheAgent(prefs)
+        # Trace-Checkbox erst nach UI-Aufbau initialisieren, Agent danach
+        self.agent = None
         self.pending_request = False
 
         self.server_monitor = QTimer(self)
@@ -71,6 +73,10 @@ class MCPServerRechercheDialog(QDialog):
         self.server_button = QPushButton('Server starten', self)
         self.server_button.clicked.connect(self.toggle_server)
         top_row.addWidget(self.server_button)
+
+        # Debug-Checkbox fuer Tool-Trace
+        self.debug_checkbox = QCheckBox('Tool-Details anzeigen', self)
+        top_row.addWidget(self.debug_checkbox)
 
         top_row.addStretch(1)
         main_layout.addLayout(top_row)
@@ -114,6 +120,9 @@ class MCPServerRechercheDialog(QDialog):
         # Detect initial library path
         self.calibre_library_path = self._detect_calibre_library()
         log.info("Detected Calibre library path: %s", self.calibre_library_path)
+
+        # Agent nach Aufbau der UI initialisieren, damit Trace ins Chatfenster gehen kann
+        self.agent = RechercheAgent(prefs, trace_callback=self._append_trace)
 
     # ------------------------------------------------------------------ UI
 
@@ -403,6 +412,14 @@ class MCPServerRechercheDialog(QDialog):
         chosen = candidates[0]
         log.info("Auto-detected Python executable: %s", chosen)
         return chosen
+
+    def _append_trace(self, line: str) -> None:
+        """Optional Tool-/MCP-Trace in das Chatfenster schreiben."""
+        if not getattr(self, 'debug_checkbox', None):
+            return
+        if not self.debug_checkbox.isChecked():
+            return
+        self.chat_view.append(f'DEBUG: {line}')
 
 def create_dialog(gui, icon, do_user_config):
     d = MCPServerRechercheDialog(gui, icon, do_user_config)
