@@ -298,12 +298,37 @@ class RechercheAgent(object):
         return arguments
 
     def _extract_hits_from_content(self, content: Any) -> List[Dict[str, Any]]:
-        """Best-effort extraction of hits from FastMCP-style content blocks."""
+        """Best-effort extraction of hits from FastMCP-style content blocks.
+
+        Erwartete Struktur (wie von FastMCP serialisiert):
+        result = {
+            "content": [
+                {"type": "text", "text": "{\n  \"hits\": [...]}"},
+                ...
+            ]
+        }
+        """
         if not content:
             return []
 
         hits: List[Dict[str, Any]] = []
+
         for block in content:
+            # FastMCP text blocks: {"type": "text", "text": "{ \"hits\": [...]}"}
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+                raw_text = block.get("text", "")
+                try:
+                    parsed = json.loads(raw_text)
+                except Exception:
+                    # Kein JSON, dann koennen wir hier nichts extrahieren
+                    continue
+                if isinstance(parsed, dict) and isinstance(parsed.get("hits"), list):
+                    for h in parsed["hits"]:
+                        if isinstance(h, dict):
+                            hits.append(h)
+                continue
+
+            # Aeltere/andere Struktur: direktes Objekt mit 'hits' oder 'value.hits'
             value = None
             if isinstance(block, dict):
                 if "hits" in block:
@@ -317,6 +342,7 @@ class RechercheAgent(object):
                 for h in raw_hits:
                     if isinstance(h, dict):
                         hits.append(h)
+
         return hits
 
     # ------------------ Excerpt enrichment ------------------
