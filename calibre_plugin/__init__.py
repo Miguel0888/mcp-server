@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 import importlib.util
 import zipfile
+import pkgutil
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 ZIP_PATH = PLUGIN_DIR.parent.with_suffix('.zip')
@@ -32,6 +33,12 @@ for path in MODULE_PATHS:
 site_packages_dir = PLUGIN_DIR / 'site-packages'
 if site_packages_dir.exists():
     sys.path.insert(0, str(site_packages_dir))
+loader = pkgutil.get_loader(__name__)
+archive_path = getattr(loader, 'archive', None)
+if archive_path:
+    zip_site_packages = f"{archive_path}/site-packages"
+    if zip_site_packages not in sys.path:
+        sys.path.insert(0, zip_site_packages)
 
 
 class MCPServerRecherchePlugin(InterfaceActionBase):
