@@ -9,6 +9,14 @@ __docformat__ = 'restructuredtext en'
 # The class that all Interface Action plugin wrappers must inherit from
 from calibre.customize import InterfaceActionBase
 
+import sys
+from pathlib import Path
+
+PLUGIN_DIR = Path(__file__).resolve().parent
+SRC_DIR = PLUGIN_DIR.parent / 'src'
+if SRC_DIR.exists():
+    sys.path.insert(0, str(SRC_DIR))
+
 
 class MCPServerRecherchePlugin(InterfaceActionBase):
     '''
