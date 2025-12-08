@@ -12,6 +12,7 @@ if False:
     # You do not need this code in your plugins
     get_icons = get_resources = None
 
+import collections
 import logging
 import os
 import sys
@@ -34,6 +35,7 @@ from qt.core import (
     QFrame,
     QTextBrowser,
     QToolButton,
+    QStyle,
 )
 
 from calibre_plugins.mcp_server_recherche.config import prefs
@@ -81,15 +83,22 @@ class ChatMessageWidget(QFrame):
         self.text_browser.setFrameStyle(QFrame.NoFrame)
         layout.addWidget(self.text_browser)
 
-        # Optionaler aufklappbarer Tool-Trace
+        # Optionaler aufklappbarer Tool-Trace mit Pfeilsymbol und dynamischem Titel
         self.trace_widget = None
-        if tool_trace:
+        self.trace_title_label = None
+        if tool_trace is not None:
             toggle_row = QHBoxLayout()
             self.toggle_button = QToolButton(self)
-            self.toggle_button.setText('Tool-Details anzeigen')
             self.toggle_button.setCheckable(True)
+            self.toggle_button.setArrowType(Qt.RightArrow)
+            self.toggle_button.setToolButtonStyle(Qt.ToolButtonIconOnly)
             self.toggle_button.toggled.connect(self._toggle_trace)
             toggle_row.addWidget(self.toggle_button)
+
+            self.trace_title_label = QLabel('', self)
+            self.trace_title_label.setStyleSheet('font-size: 10px; color: #555;')
+            toggle_row.addWidget(self.trace_title_label)
+
             toggle_row.addStretch(1)
             layout.addLayout(toggle_row)
 
@@ -99,6 +108,19 @@ class ChatMessageWidget(QFrame):
             self.trace_widget.setVisible(False)
             self.trace_widget.setStyleSheet('font-size: 10px; color: #555;')
             layout.addWidget(self.trace_widget)
+
+    def update_trace(self, title: str | None, content: str):
+        """Trace-Inhalt und optionalen Titel aktualisieren.
+
+        - content: kompletter Blocktext (alle Debug-Zeilen des Steps)
+        - title: sichtbarer Beschreibungstext fuer den aktuellen Schritt;
+          wenn None oder leer, wird nur der Pfeil ohne Titel angezeigt.
+        """
+        if self.trace_widget is None:
+            return
+        self.trace_widget.setPlainText(content)
+        if self.trace_title_label is not None:
+            self.trace_title_label.setText(title or '')
 
     def _role_label(self) -> str:
         if self.role == 'user':
@@ -137,7 +159,8 @@ class ChatMessageWidget(QFrame):
     def _toggle_trace(self, checked: bool):
         if self.trace_widget is not None:
             self.trace_widget.setVisible(checked)
-            self.toggle_button.setText('Tool-Details verbergen' if checked else 'Tool-Details anzeigen')
+            # Pfeilrichtung anpassen
+            self.toggle_button.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
 
 
 class ChatPanel(QWidget):
@@ -220,6 +243,12 @@ class MCPServerRechercheDialog(QDialog):
         self.server_monitor.setInterval(1000)
         self.server_monitor.timeout.connect(self._monitor_server)
 
+        # Statusleisten-Queue fuer Systemmeldungen
+        self._status_queue = collections.deque()
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.timeout.connect(self._show_next_status)
+
         main_layout = QVBoxLayout(self)
         self.setLayout(main_layout)
 
@@ -277,6 +306,14 @@ class MCPServerRechercheDialog(QDialog):
 
         main_layout.addLayout(input_row)
 
+        # Einfache Statusleiste am unteren Rand
+        status_row = QHBoxLayout()
+        self.status_label = QLabel('', self)
+        self.status_label.setStyleSheet('color: #555555; font-size: 10px;')
+        status_row.addWidget(self.status_label)
+        status_row.addStretch(1)
+        main_layout.addLayout(status_row)
+
         # Window setup
         self.setWindowTitle('MCP Server Recherche')
         self.setWindowIcon(icon)
@@ -288,7 +325,25 @@ class MCPServerRechercheDialog(QDialog):
 
         # Agent nach Aufbau der UI initialisieren, damit Trace ins Chatfenster gehen kann
         self._trace_buffer: list[str] = []
+        self._trace_title: str | None = None
+        self._current_ai_message: ChatMessageWidget | None = None
         self.agent = RechercheAgent(prefs, trace_callback=self._append_trace)
+
+    # ----------------------------- Statusbar-Helfer ---------------------
+
+    def _enqueue_status(self, message: str, min_ms: int = 3000):
+        """Neue Statusmeldung in die Queue stellen und ggf. sofort anzeigen."""
+        self._status_queue.append((message, min_ms))
+        if not self._status_timer.isActive() and self._status_queue:
+            self._show_next_status()
+
+    def _show_next_status(self):
+        if not self._status_queue:
+            self.status_label.setText('')
+            return
+        message, min_ms = self._status_queue.popleft()
+        self.status_label.setText(message)
+        self._status_timer.start(max(1000, min_ms))
 
     # ------------------------------------------------------------------ UI
 
@@ -297,6 +352,7 @@ class MCPServerRechercheDialog(QDialog):
         self.do_user_config(parent=self)
         self.chat_client = ChatProviderClient(prefs)
         self._update_conn_label()
+        self._enqueue_status('Einstellungen aktualisiert.')
 
     def _update_conn_label(self):
         host = prefs['server_host'] or '127.0.0.1'
@@ -338,20 +394,18 @@ class MCPServerRechercheDialog(QDialog):
             library_path = library_override
             source = 'prefs'
         if not library_path:
-            self.chat_panel.add_system_message(
-                'Kein Calibre-Bibliothekspfad konfiguriert und keine aktuelle Bibliothek gefunden.'
-            )
+            self._enqueue_status('Kein Calibre-Bibliothekspfad konfiguriert und keine aktuelle Bibliothek gefunden.')
             return
 
         if self.server_running and self.server_process and self.server_process.poll() is None:
-            self.chat_panel.add_system_message('MCP Server laeuft bereits.')
+            self._enqueue_status('MCP Server laeuft bereits.')
             return
 
         try:
             python_cmd = self._python_executable()
         except RuntimeError as exc:
             log.error("No usable Python interpreter: %s", exc)
-            self.chat_panel.add_system_message(f'System: {exc}')
+            self._enqueue_status(f'System: {exc}')
             return
 
         env = os.environ.copy()
@@ -380,13 +434,13 @@ class MCPServerRechercheDialog(QDialog):
             )
         except OSError as exc:
             log.exception("Failed to start MCP server process")
-            self.chat_panel.add_system_message(f'MCP Server konnte nicht starten: {exc}')
+            self._enqueue_status(f'MCP Server konnte nicht starten: {exc}')
             self.server_process = None
             return
 
         self.server_running = True
         self.server_button.setText('Server stoppen')
-        self.chat_panel.add_system_message(f'MCP Server gestartet auf ws://{host}:{port}.')
+        self._enqueue_status(f'MCP Server gestartet auf ws://{host}:{port}.')
         self.server_monitor.start()
 
     def _stop_server(self):
@@ -396,7 +450,7 @@ class MCPServerRechercheDialog(QDialog):
             self.server_running = False
             self.server_button.setText('Server starten')
             self.server_monitor.stop()
-            self.chat_panel.add_system_message('MCP Server wurde gestoppt.')
+            self._enqueue_status('MCP Server wurde gestoppt.')
             return
 
         try:
@@ -420,14 +474,14 @@ class MCPServerRechercheDialog(QDialog):
             log.exception("Failed to read server output on stop: %s", exc)
 
         if stderr:
-            self.chat_panel.add_system_message(f'stderr: {stderr.strip()[:500]}')
+            self._enqueue_status(f'stderr: {stderr.strip()[:500]}')
         if stdout:
-            self.chat_panel.add_system_message(f'stdout: {stdout.strip()[:500]}')
+            self._enqueue_status(f'stdout: {stdout.strip()[:500]}')
 
         self.server_running = False
         self.server_button.setText('Server starten')
         self.server_monitor.stop()
-        self.chat_panel.add_system_message('MCP Server wurde gestoppt.')
+        self._enqueue_status('MCP Server wurde gestoppt.')
 
     def _monitor_server(self):
         proc = self.server_process
@@ -468,6 +522,7 @@ class MCPServerRechercheDialog(QDialog):
         self.server_running = False
         self.server_button.setText('Server starten')
         self.server_monitor.stop()
+        self._enqueue_status(msg)
 
     def closeEvent(self, event):
         self._stop_server()
@@ -480,7 +535,8 @@ class MCPServerRechercheDialog(QDialog):
         self.chat_panel.clear()
         self._trace_buffer = []
         self.agent = RechercheAgent(prefs, trace_callback=self._append_trace)
-        self.chat_panel.add_system_message('Neuer Chat gestartet.')
+        # Hinweis nur in der Statusleiste, nicht im Chatverlauf
+        self._enqueue_status('Neuer Chat gestartet.')
 
     def send_message(self):
         if self.pending_request:
@@ -498,36 +554,56 @@ class MCPServerRechercheDialog(QDialog):
 
     def _process_chat(self, text: str):
         try:
-            self.chat_panel.add_system_message('Starte Recherche uebers MCP-Backend ...')
+            self._enqueue_status('Starte Recherche uebers MCP-Backend ...')
+            # neuen Trace-Kontext fuer diese Frage
             self._trace_buffer = []
+            self._trace_title = None
+            self._current_ai_message = None
             response = self.agent.answer_question(text)
         except Exception as exc:
             log.exception("Research agent failed")
-            self.chat_panel.add_system_message(f'Fehler in der Recherche-Pipeline: {exc}')
+            self._enqueue_status(f'Fehler in der Recherche-Pipeline: {exc}')
         else:
             if response:
-                # Gesammelte Traces zu einem Block zusammenfassen
-                tool_trace = None
-                if self.debug_checkbox.isChecked() and self._trace_buffer:
-                    tool_trace = "\n".join(self._trace_buffer)
+                # Beim ersten Rendern der AI-Antwort das zugehoerige MessageWidget merken
+                tool_trace = "\n".join(self._trace_buffer) if self._trace_buffer else None
                 self.chat_panel.add_ai_message(response, tool_trace=tool_trace)
+                # Letzte hinzugefuegte Nachricht ist unsere aktuelle AI-Nachricht
+                if self.chat_panel.messages_layout.count() >= 2:
+                    item = self.chat_panel.messages_layout.itemAt(self.chat_panel.messages_layout.count() - 2)
+                    widget = item.widget() if item is not None else None
+                    if isinstance(widget, ChatMessageWidget):
+                        self._current_ai_message = widget
+                        # Initialen Titel setzen (falls vorhanden)
+                        if self._trace_title:
+                            widget.update_trace(self._trace_title, tool_trace or '')
             else:
-                self.chat_panel.add_system_message('Keine Antwort vom Provider erhalten.')
+                self._enqueue_status('Keine Antwort vom Provider erhalten.')
         finally:
             self._toggle_send_state(False)
 
     def _append_trace(self, message: str):
         """Trace-Callback fuer den Agenten.
 
-        Statt jede Trace-Zeile sofort anzuzeigen, werden sie im aktuellen
-        Chat-Durchlauf gesammelt und als aufklappbare Tool-Details an die
-        naechste AI-Antwort angehaengt (sofern Debug aktiviert ist).
+        Debug-Ausgaben werden pro Frage als ein Block gesammelt. Der
+        Beschreibungstext (Titel) kann sich waehrend des laufenden Steps
+        aendern und verschwindet, sobald der Step abgeschlossen ist;
+        der Pfeil zum Aufklappen bleibt jedoch erhalten.
         """
-        # Immer puffern, damit wir die Infos fuer die naechste Antwort haben
-        self._trace_buffer.append(message)
-        # Optional zusaetzlich inline als Debug-Nachricht anzeigen
-        if self.debug_checkbox.isChecked():
-            self.chat_panel.add_debug_message(message)
+        # Heuristik: erste Debug-Zeile als aktueller Titel verwenden,
+        # spaetere Zeilen werden nur in den Inhalt aufgenommen.
+        text = message.strip()
+        if text:
+            if self._trace_title is None:
+                self._trace_title = text
+            self._trace_buffer.append(text)
+
+        # Wenn bereits eine AI-Nachricht gerendert wurde und der Benutzer
+        # den Block geoeffnet hat, aktualisieren wir Inhalt und Titel live.
+        if self._current_ai_message is not None:
+            content = "\n".join(self._trace_buffer)
+            title = self._trace_title if self.debug_checkbox.isChecked() else None
+            self._current_ai_message.update_trace(title, content)
 
     def _toggle_send_state(self, busy: bool):
         self.pending_request = busy
