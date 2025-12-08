@@ -37,6 +37,7 @@ from qt.core import (
     QToolButton,
     QStyle,
     Qt,
+    QSizePolicy,
 )
 
 from calibre_plugins.mcp_server_recherche.config import prefs
