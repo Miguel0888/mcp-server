@@ -15,9 +15,9 @@ if False:
 import logging
 import os
 import shutil
-import subprocess
 import sys
 from pathlib import Path
+import threading
 
 from qt.core import (
     QDialog,
@@ -32,6 +32,7 @@ from qt.core import (
 
 from calibre_plugins.mcp_server_recherche.config import prefs
 from calibre_plugins.mcp_server_recherche.provider_client import ChatProviderClient
+from calibre_plugins.mcp_server_recherche.server_runner import MCPServerThread
 
 
 log = logging.getLogger(__name__)
@@ -54,6 +55,7 @@ class MCPServerRechercheDialog(QDialog):
 
         self.server_running = False
         self.server_process: subprocess.Popen | None = None
+        self.server_thread: MCPServerThread | None = None
         self.chat_client = ChatProviderClient(prefs)
         self.pending_request = False
 
@@ -170,60 +172,24 @@ class MCPServerRechercheDialog(QDialog):
             self.chat_view.append('System: Kein Calibre-Bibliothekspfad konfiguriert und kein aktuelle Bibliothek gefunden.')
             return
 
-        env = os.environ.copy()
-        env['MCP_SERVER_HOST'] = host
-        env['MCP_SERVER_PORT'] = str(port)
-        env['CALIBRE_LIBRARY_PATH'] = library_path
+        if self.server_thread and self.server_thread.is_running:
+            self.chat_view.append('System: MCP Server laeuft bereits.')
+            return
 
         log.info(
-            "Starting MCP server: host=%s port=%s library_source=%s library=%r",
+            "Starting embedded MCP server: host=%s port=%s library_source=%s library=%r",
             host,
             port,
             source,
             library_path,
         )
 
-        python_cmd = self._python_executable()
-        cmd = [python_cmd, '-m', 'calibre_mcp_server.websocket_server']
-        log.info("Command: %s", cmd)
-
-        try:
-            self.server_process = subprocess.Popen(
-                cmd,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding='utf-8',
-            )
-        except OSError as exc:
-            log.exception("Failed to start MCP server process")
-            self.chat_view.append(f'System: Start fehlgeschlagen ({exc}).')
-            self.server_process = None
-            return
-
-        def _consume_stream(stream, label):
-            if not stream:
-                return ''
-            data = stream.read()
-            if data:
-                log.info("Server %s: %s", label, data.strip())
-            return data
-
-        # Wait briefly for immediate failure
-        try:
-            code = self.server_process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            code = None
-
-        if code is not None:
-            stderr = _consume_stream(self.server_process.stderr, 'stderr')
-            stdout = _consume_stream(self.server_process.stdout, 'stdout')
-            self.server_process = None
-            self.chat_view.append(f'System: MCP Server konnte nicht starten (Code {code}).')
-            for label, content in [('stderr', stderr), ('stdout', stdout)]:
-                if content:
-                    self.chat_view.append(f'{label}: {content.strip()[:500]}')
+        self.server_thread = MCPServerThread(host=host, port=port, library_path=library_path)
+        self.server_thread.start()
+        if not self.server_thread.wait_until_started(timeout=3):
+            error = self.server_thread.last_error or 'Unbekannter Fehler'
+            self.chat_view.append(f'System: MCP Server konnte nicht starten: {error}')
+            self.server_thread = None
             return
 
         self.server_running = True
@@ -232,54 +198,31 @@ class MCPServerRechercheDialog(QDialog):
         self.server_monitor.start()
 
     def _stop_server(self):
-        proc = self.server_process
-        self.server_process = None
-        if proc and proc.poll() is None:
-            proc.terminate()
+        if self.server_thread:
+            self.server_thread.stop()
+            self.server_thread = None
+        if self.server_process:
             try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        if proc:
-            stderr = proc.stderr.read() if proc.stderr else ''
-            stdout = proc.stdout.read() if proc.stdout else ''
-            if stderr:
-                self.chat_view.append(f'stderr: {stderr.strip()[:500]}')
-            if stdout:
-                self.chat_view.append(f'stdout: {stdout.strip()[:500]}')
+                self.server_process.terminate()
+            except Exception:
+                pass
+            self.server_process = None
         self.server_running = False
         self.server_button.setText('Server starten')
         self.chat_view.append('System: MCP Server wurde gestoppt.')
         self.server_monitor.stop()
 
     def _monitor_server(self):
-        if not self.server_process:
-            return
-        code = self.server_process.poll()
-        if code is not None:
-            details = self._drain_process_stderr(self.server_process)
-            self.server_process = None
+        if self.server_thread and not self.server_thread.is_running:
+            error = self.server_thread.last_error
+            self.server_thread = None
             self.server_running = False
             self.server_button.setText('Server starten')
-            self.chat_view.append(f'System: MCP Server beendet (Code {code}).')
-            if details:
-                self.chat_view.append(f'Details: {details}')
+            msg = 'System: MCP Server beendet.'
+            if error:
+                msg += f' Fehler: {error}'
+            self.chat_view.append(msg)
             self.server_monitor.stop()
-
-    def _drain_process_stderr(self, proc: subprocess.Popen | None) -> str:
-        if not proc or not proc.stderr:
-            return ''
-        try:
-            proc.stderr.seek(0)  # ensure pointer at start if possible
-        except Exception:
-            pass
-        data = proc.stderr.read() or ''
-        try:
-            proc.stderr.close()
-        except Exception:
-            pass
-        text = data.strip()
-        return text[:1000]
 
     def closeEvent(self, event):
         self._stop_server()
