@@ -674,12 +674,12 @@ class RechercheAgent(object):
                 + base_prompt
             )
 
-            secondary_keywords = _run_llm(second_prompt)
+            raw_secondary = _run_llm(second_prompt)
 
             # Simple safeguard fuer Sekundaersprache: reine Hilfsverben entfernen
             blocklist = {"can", "will", "may", "must", "be", "do", "have"}
             cleaned_secondary: list[str] = []
-            for kw in secondary_keywords:
+            for kw in raw_secondary:
                 if not kw:
                     continue
                 tokens = [t for t in kw.split() if t]
@@ -687,7 +687,48 @@ class RechercheAgent(object):
                     # Skip pure helper verb from second language
                     continue
                 cleaned_secondary.append(kw)
-            secondary_keywords = cleaned_secondary
+
+            # Nachbearbeitung: Bus-Kurzformen wie CAN, LIN, FlexRay, MOST, TTP/C
+            # niemals allein oder als nackte OR-Kette verwenden, sondern
+            # immer mit Automotive-Kontext kombinieren.
+            bus_tokens = {"CAN", "LIN", "FLEXRAY", "MOST", "TTP/C"}
+            rewritten_secondary: list[str] = []
+            for kw in cleaned_secondary:
+                tokens_up = [t.strip() for t in re.split(r"\s+", kw) if t.strip()]
+                # Erkenne reine OR-Ketten aus Busnamen, z. B. "CAN OR LIN OR FlexRay"
+                # oder einzelne Busnamen ohne weiteren Kontext.
+                bus_only = True
+                seen_buses: list[str] = []
+                for t in tokens_up:
+                    t_norm = t.upper()
+                    if t_norm in bus_tokens:
+                        if t_norm not in seen_buses:
+                            seen_buses.append(t_norm)
+                    elif t_norm in {"OR", "AND", "(" , ")"}:
+                        continue
+                    else:
+                        bus_only = False
+                        break
+
+                if bus_only and seen_buses:
+                    # Statt der nackten OR-Kette erzeugen wir pro Bus 1–2
+                    # kontextreiche Phrasen.
+                    for b in seen_buses:
+                        # einfache Phrasen-Variante
+                        phrase = f"{b} bus automotive"
+                        if phrase not in rewritten_secondary:
+                            rewritten_secondary.append(phrase)
+                        # UND-Variante mit klarem Fahrzeug-Kontext
+                        and_phrase = f"{b} AND vehicle bus systems"
+                        if and_phrase not in rewritten_secondary:
+                            rewritten_secondary.append(and_phrase)
+                    continue
+
+                # Alles andere unveraendert uebernehmen
+                if kw not in rewritten_secondary:
+                    rewritten_secondary.append(kw)
+
+            secondary_keywords = rewritten_secondary
 
             self._trace_log(f"Schlagwoerter ({lang_for_trace}): {secondary_keywords!r}")
 
