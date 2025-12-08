@@ -36,6 +36,7 @@ from qt.core import (
     QTextBrowser,
     QToolButton,
     QStyle,
+    Qt,
 )
 
 from calibre_plugins.mcp_server_recherche.config import prefs
@@ -423,15 +424,24 @@ class MCPServerRechercheDialog(QDialog):
             library_path,
         )
 
+        popen_kwargs = {
+            'env': env,
+            'stdout': subprocess.PIPE,
+            'stderr': subprocess.PIPE,
+            'text': True,
+            'encoding': 'utf-8',
+        }
+        # Unter Windows das Konsolenfenster unterdruecken, damit der Server
+        # im Hintergrund laeuft und keine zusaetzliche Shell auftaucht.
+        if os.name == 'nt':
+            try:
+                flags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+            except AttributeError:
+                flags = 0
+            popen_kwargs['creationflags'] = flags
+
         try:
-            self.server_process = subprocess.Popen(
-                cmd,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding='utf-8',
-            )
+            self.server_process = subprocess.Popen(cmd, **popen_kwargs)
         except OSError as exc:
             log.exception("Failed to start MCP server process")
             self._enqueue_status(f'MCP Server konnte nicht starten: {exc}')
