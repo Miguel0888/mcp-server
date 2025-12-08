@@ -97,48 +97,14 @@ class RechercheAgent(object):
 
             effective_question = self._resolve_effective_question(question)
 
-            # Refinement-Loop: LLM kann bei zu wenigen Treffern neue Queries vorschlagen
-            all_hits: List[SearchHit] = []
-            used_query_sets: List[List[str]] = []
-
-            current_queries = self._plan_search_queries(effective_question)
-            used_query_sets.append(current_queries)
-            hits = self._run_search_plan(current_queries)
-            all_hits.extend(hits)
-
-            round_idx = 0
-            while len(all_hits) < self.min_hits_required and round_idx < self.max_refinement_rounds:
-                round_idx += 1
-                self._trace_log(
-                    f"Refinement-Runde {round_idx}: nur {len(all_hits)} Treffer, KI formuliert neue Suchabfragen."
-                )
-                refinement_queries = self._refine_search_queries(
-                    original_question=question,
-                    effective_question=effective_question,
-                    previous_queries=current_queries,
-                    hits=hits,
-                )
-                if not refinement_queries:
-                    break
-                used_query_sets.append(refinement_queries)
-                current_queries = refinement_queries
-                hits = self._run_search_plan(current_queries)
-                all_hits.extend(hits)
-
-            # De-duplizieren
-            deduped: List[SearchHit] = []
-            seen_ids: Set[Tuple[Any, Any]] = set()
-            for h in all_hits:
-                ident = (h.book_id, h.isbn)
-                if ident in seen_ids:
-                    continue
-                seen_ids.add(ident)
-                deduped.append(h)
-
-            if not deduped:
+            # Basis-Suchlauf ohne mehrfache Refinement-Schleifen: zuerst mit
+            # effektiver Frage suchen, spaeter kann ein Refinement-Loop
+            # stabil darauf aufbauen.
+            search_queries = self._plan_search_queries(effective_question)
+            search_hits = self._run_search_plan(search_queries)
+            if not search_hits:
                 return "System: Keine passenden Treffer im MCP-Server gefunden."
 
-            search_hits = deduped[: self.max_hits_total]
             enriched_hits = self._enrich_hits_with_excerpts(search_hits)
             # Session-State aktualisieren
             self._last_question = question
@@ -206,7 +172,13 @@ class RechercheAgent(object):
         """
         use_llm = bool(self.prefs.get('use_llm_query_planning', True))
         raw_queries: List[str] = []
-        effective_question = question
+
+        # Fuer die Keyword-Extraktion bei Nachfragen sowohl letzte als auch
+        # aktuelle Frage berücksichtigen, damit der Kontext (z. B.
+        # Bussysteme) erhalten bleibt.
+        keyword_basis = question
+        if self._last_question:
+            keyword_basis = f"{self._last_question} {question}"
 
         if use_llm:
             planning_prompt = (
@@ -220,7 +192,7 @@ class RechercheAgent(object):
             try:
                 response = self.chat_client.send_chat(planning_prompt)
                 raw_queries = self._extract_queries(response)
-            except Exception as exc:  # noqa: BLE001 - fallback to heuristische Suche
+            except Exception as exc:  # noqa: BLE001 - fallback zu heuristischer Suche
                 log.warning("LLM-Query-Planung fehlgeschlagen: %s", exc)
                 raw_queries = []
 
@@ -234,11 +206,25 @@ class RechercheAgent(object):
 
         # Nun Schlagwoerter extrahieren und in boolsche Volltextqueries
         keyword_queries: List[str] = []
+        # Schlagwoerter aus der kombinierten Basis extrahieren, damit bei
+        # Nachfragen ("Sag mir mehr zu LIN") die Begriffe aus der
+        # vorherigen Frage ("Fahrzeug-Bussysteme") erhalten bleiben.
+        kws = self._extract_keywords(keyword_basis)
+        if kws:
+            combined_query = self._keywords_to_query(kws)
+            keyword_queries.append(combined_query)
+
+        # Optional weitere Varianten auf Basis der LLM-Rohqueries aufbauen
         for q in raw_queries:
-            kws = self._extract_keywords(q)
-            if not kws:
+            if q == question:
+                # schon ueber keyword_basis abgedeckt
                 continue
-            keyword_queries.append(self._keywords_to_query(kws))
+            extra_kws = self._extract_keywords(q)
+            if not extra_kws:
+                continue
+            q_str = self._keywords_to_query(extra_kws)
+            if q_str not in keyword_queries:
+                keyword_queries.append(q_str)
 
         # Fallback: wenn keine Keywords erkannt wurden, nehme Roh-Queries
         if not keyword_queries:
