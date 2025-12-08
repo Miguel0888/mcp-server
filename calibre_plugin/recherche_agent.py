@@ -166,9 +166,10 @@ class RechercheAgent(object):
 
         Kombination aus heuristischer Basissuche und LLM-geplanter Query-Liste:
         - Aus der (effektiven) Frage wird immer eine robuste Keyword-Query gebaut,
-          z. B. "fahrzeug AND bussysteme".
+          z. B. "fahrzeug AND bussysteme" (oder OR, je nach Einstellung).
         - Optional werden vom LLM vorgeschlagene Suchanfragen ergaenzend
-          hinzugefuegt (Synonyme, verwandte Begriffe etc.).
+          hinzugefuegt (Synonyme, verwandte Begriffe etc.), die sowohl AND-
+          als auch OR-Kombinationen enthalten duerfen.
         """
         use_llm = bool(self.prefs.get('use_llm_query_planning', True))
         llm_queries: List[str] = []
@@ -195,6 +196,8 @@ class RechercheAgent(object):
                 "oder Volltextsuche uebergibt.\n\n"
                 "Rahmenbedingungen:\n"
                 "- Extrahiere und kombiniere nur die wichtigsten Fachbegriffe, Abkuerzungen und Synonyme.\n"
+                "- Erzeuge gerne mehrere Varianten, z. B. einmal enger mit AND-Verknuepfungen,\n"
+                "  und einmal breiter mit OR-Verknuepfungen zwischen Schlagwoertern.\n"
                 "- Du darfst bei Bedarf boolsche Operatoren AND/OR nutzen, aber keine komplexen Ausdruecke.\n"
                 "- Jede Zeile soll eine eigenstaendige Suchanfrage sein (wie bei einer Suchmaschine).\n"
                 "- Vermeide Hoeflichkeitsfloskeln und Funktionsverben (z. B. 'erklaere', 'sag mir', 'bitte').\n"
@@ -234,41 +237,19 @@ class RechercheAgent(object):
         self._trace_log(f"Geplante Volltext-Queries: {queries!r}")
         return queries
 
-    def _extract_keywords(self, text: str) -> List[str]:
-        """Einfache Schlagwort-Extraktion fuer Volltextsuchen.
+    def _keywords_to_query(self, keywords: List[str]) -> str:
+        """Baue eine boolsche Volltextquery aus Schlagwoertern.
 
-        - Kleinbuchstaben
-        - nicht alphanumerische Zeichen zu Leerzeichen
-        - sehr knapper Stoppwortfilter (de/en Funktionswoerter)
-        - Laengenfilter (>= 3 Zeichen)
-        - Limit aus prefs (max_search_keywords)
+        Der Operator (AND/OR) ist ueber die Einstellung 'keyword_boolean_operator'
+        steuerbar und dient als *heuristische* Basis; der LLM kann zusaetzlich
+        eigene AND/OR-Kombinationen vorschlagen.
         """
-        if not text:
-            return []
-
-        max_kws = int(self.prefs.get('max_search_keywords', 5))
-        cleaned = re.sub(r"[^\wäöüÄÖÜß]+", " ", text.lower())
-        tokens = [t.strip() for t in cleaned.split() if t.strip()]
-
-        stopwords = {
-            'und', 'oder', 'der', 'die', 'das', 'ein', 'eine', 'einer', 'eines',
-            'ist', 'sind', 'was', 'wie', 'warum', 'welche', 'welcher', 'welches',
-            'gibt', 'es', 'zu', 'im', 'in', 'am', 'an', 'den', 'dem', 'des',
-            'the', 'a', 'an', 'of', 'for', 'to', 'on', 'in', 'and', 'or',
-        }
-
-        keywords: List[str] = []
-        for tok in tokens:
-            if len(tok) < 3:
-                continue
-            if tok in stopwords:
-                continue
-            if tok not in keywords:
-                keywords.append(tok)
-            if len(keywords) >= max_kws:
-                break
-
-        return keywords
+        if not keywords:
+            return ""
+        op = str(self.prefs.get('keyword_boolean_operator', 'AND')).upper()
+        if op not in ('AND', 'OR'):
+            op = 'AND'
+        return f" {op} ".join(keywords)
 
     # ------------------ Search plan execution ------------------
 
