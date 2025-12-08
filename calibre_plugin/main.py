@@ -13,6 +13,9 @@ if False:
     get_icons = get_resources = None
 
 import logging
+import os
+import sys
+from pathlib import Path
 
 from qt.core import (
     QDialog,

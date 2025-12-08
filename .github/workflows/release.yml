@@ -19,13 +19,6 @@ jobs:
           mkdir -p dist build/plugin
           rsync -av calibre_plugin/ build/plugin/
           rsync -av src/calibre_mcp_server/ build/plugin/calibre_mcp_server/
-          python -m venv .venv
-          source .venv/bin/activate
-          pip install --upgrade pip
-          pip install websockets fastmcp
-          mkdir -p build/plugin/site-packages
-          pip install websockets fastmcp -t build/plugin/site-packages
-          deactivate
           cd build/plugin
           zip -r ../../dist/calibre-mcp-plugin.zip .
 
