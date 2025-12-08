@@ -11,6 +11,7 @@ try:
 except ImportError as exc:  # pragma: no cover - runtime environment
     websockets = None
 
+from calibre_plugins.mcp_server_recherche.config import prefs
 from calibre_plugins.mcp_server_recherche.provider_client import ChatProviderClient
 
 log = logging.getLogger(__name__)
@@ -26,14 +27,15 @@ class RechercheAgent(object):
     def __init__(self, prefs_obj):
         self.prefs = prefs_obj
         self.chat_client = ChatProviderClient(self.prefs)
-        self.max_query_variants = 3
-        self.max_hits_per_query = 6
-        self.max_hits_total = 12
-        self.target_sources = 3
-        self.max_excerpts = 4
-        self.max_excerpt_chars = 1200
-        self.context_hit_limit = 8
-        self.request_timeout = 15
+        # Werte aus Preferences mit Defaults lesen
+        self.max_query_variants = int(self.prefs.get('max_query_variants', 3))
+        self.max_hits_per_query = int(self.prefs.get('max_hits_per_query', 6))
+        self.max_hits_total = int(self.prefs.get('max_hits_total', 12))
+        self.target_sources = int(self.prefs.get('target_sources', 3))
+        self.max_excerpts = int(self.prefs.get('max_excerpts', 4))
+        self.max_excerpt_chars = int(self.prefs.get('max_excerpt_chars', 1200))
+        self.context_hit_limit = int(self.prefs.get('context_hit_limit', 8))
+        self.request_timeout = int(self.prefs.get('request_timeout', 15))
         # Cache der vom Server gemeldeten Tools (name -> schema)
         self._tool_schemas: Dict[str, Dict[str, Any]] = {}
 
@@ -115,7 +117,7 @@ class RechercheAgent(object):
     def _extract_queries(raw_response: str) -> List[str]:
         queries: List[str] = []
         for line in raw_response.splitlines():
-            cleaned = re.sub(r"^[\-•\d\)\s]+", "", line.strip())
+            cleaned = re.sub(r"^[\-•\d)\s]+", "", line.strip())
             if cleaned and cleaned not in queries:
                 queries.append(cleaned)
         return queries

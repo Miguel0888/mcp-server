@@ -45,6 +45,17 @@ prefs.defaults['selected_model'] = {}
 prefs.defaults['use_active_library'] = True
 prefs.defaults['python_executable'] = ''
 prefs.defaults['auto_detect_python'] = True
+
+# Defaults fuer Recherche-Agent
+prefs.defaults['max_query_variants'] = 3
+prefs.defaults['max_hits_per_query'] = 6
+prefs.defaults['max_hits_total'] = 12
+prefs.defaults['target_sources'] = 3
+prefs.defaults['max_excerpts'] = 4
+prefs.defaults['max_excerpt_chars'] = 1200
+prefs.defaults['context_hit_limit'] = 8
+prefs.defaults['request_timeout'] = 15
+
 ensure_model_prefs(prefs)
 
 
@@ -108,6 +119,41 @@ class MCPServerRechercheConfigWidget(QWidget):
         self.auto_python_checkbox.setChecked(prefs.get('auto_detect_python', True))
         self.auto_python_checkbox.stateChanged.connect(self._python_mode_changed)
         server_form.addRow('', self.auto_python_checkbox)
+
+        # Recherche-Parameter ----------------------------------------------
+        tuning_group = QGroupBox(_('Recherche-Feintuning'), self)
+        tuning_form = QFormLayout(tuning_group)
+        tuning_group.setLayout(tuning_form)
+        layout.addWidget(tuning_group)
+
+        def _make_int_edit(pref_key: str, default: int) -> QLineEdit:
+            edit = QLineEdit(self)
+            edit.setText(str(prefs.get(pref_key, default)))
+            return edit
+
+        self.max_query_variants_edit = _make_int_edit('max_query_variants', 3)
+        tuning_form.addRow(_('Max. Suchvarianten:'), self.max_query_variants_edit)
+
+        self.max_hits_per_query_edit = _make_int_edit('max_hits_per_query', 6)
+        tuning_form.addRow(_('Treffer pro Query (Limit):'), self.max_hits_per_query_edit)
+
+        self.max_hits_total_edit = _make_int_edit('max_hits_total', 12)
+        tuning_form.addRow(_('Max. Treffer gesamt:'), self.max_hits_total_edit)
+
+        self.target_sources_edit = _make_int_edit('target_sources', 3)
+        tuning_form.addRow(_('Anzahl Zielquellen (frueh abbrechen bei genug Treffern):'), self.target_sources_edit)
+
+        self.max_excerpts_edit = _make_int_edit('max_excerpts', 4)
+        tuning_form.addRow(_('Max. Excerpts:'), self.max_excerpts_edit)
+
+        self.max_excerpt_chars_edit = _make_int_edit('max_excerpt_chars', 1200)
+        tuning_form.addRow(_('Excerpt-Laenge (Zeichen):'), self.max_excerpt_chars_edit)
+
+        self.context_hit_limit_edit = _make_int_edit('context_hit_limit', 8)
+        tuning_form.addRow(_('Max. Treffer im Kontextblock:'), self.context_hit_limit_edit)
+
+        self.request_timeout_edit = _make_int_edit('request_timeout', 15)
+        tuning_form.addRow(_('Timeout fuer MCP-Anfragen (Sekunden, aktuell nur informativ):'), self.request_timeout_edit)
 
         # Info label
         info = QLabel(
@@ -223,6 +269,25 @@ class MCPServerRechercheConfigWidget(QWidget):
 
         prefs['auto_detect_python'] = self.auto_python_checkbox.isChecked()
         prefs['python_executable'] = self.python_edit.text().strip()
+
+        # Recherche-Parameter aus UI lesen (mit einfachen Fallbacks)
+        def _read_int(edit: QLineEdit, default: int) -> int:
+            try:
+                value = int(edit.text().strip())
+                if value <= 0:
+                    raise ValueError
+                return value
+            except Exception:
+                return default
+
+        prefs['max_query_variants'] = _read_int(self.max_query_variants_edit, 3)
+        prefs['max_hits_per_query'] = _read_int(self.max_hits_per_query_edit, 6)
+        prefs['max_hits_total'] = _read_int(self.max_hits_total_edit, 12)
+        prefs['target_sources'] = _read_int(self.target_sources_edit, 3)
+        prefs['max_excerpts'] = _read_int(self.max_excerpts_edit, 4)
+        prefs['max_excerpt_chars'] = _read_int(self.max_excerpt_chars_edit, 1200)
+        prefs['context_hit_limit'] = _read_int(self.context_hit_limit_edit, 8)
+        prefs['request_timeout'] = _read_int(self.request_timeout_edit, 15)
 
         self._persist_provider_settings()
         self._update_selection_labels()
