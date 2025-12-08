@@ -43,6 +43,7 @@ prefs.defaults['api_key'] = ''        # Optional AI key (e.g. OpenAI)
 prefs.defaults['models'] = {}
 prefs.defaults['selected_model'] = {}
 prefs.defaults['use_active_library'] = True
+prefs.defaults['python_executable'] = ''
 ensure_model_prefs(prefs)
 
 
@@ -89,6 +90,17 @@ class MCPServerRechercheConfigWidget(QWidget):
         lib_row.addWidget(browse_btn)
 
         server_form.addRow(_('Calibre-Bibliothek:'), lib_row)
+
+        python_row = QHBoxLayout()
+        self.python_edit = QLineEdit(self)
+        self.python_edit.setText(prefs['python_executable'])
+        self.python_edit.setPlaceholderText(_('z. B. C:/Python/python.exe'))
+        python_browse = QPushButton(_('Auswahl'), self)
+        python_browse.clicked.connect(self.choose_python)
+        python_row.addWidget(self.python_edit)
+        python_row.addWidget(python_browse)
+        server_form.addRow(_('Python-Interpreter (optional):'), python_row)
+        self.python_browse = python_browse
 
         # Info label
         info = QLabel(
@@ -149,6 +161,7 @@ class MCPServerRechercheConfigWidget(QWidget):
         self._load_providers()
         self._update_selection_labels()
         self._update_library_inputs()
+        self._update_python_inputs()
 
     def choose_library(self):
         """Select calibre library root directory."""
@@ -160,6 +173,11 @@ class MCPServerRechercheConfigWidget(QWidget):
         if path:
             self.library_edit.setText(path)
 
+    def choose_python(self):
+        path, _ = QFileDialog.getOpenFileName(self, _('Python-Interpreter waehlen'), self.python_edit.text() or '')
+        if path:
+            self.python_edit.setText(path)
+
     def _library_mode_changed(self, state):
         prefs['use_active_library'] = bool(state)
         self._update_library_inputs()
@@ -168,6 +186,11 @@ class MCPServerRechercheConfigWidget(QWidget):
         use_active = self.use_active_checkbox.isChecked()
         self.library_edit.setEnabled(not use_active)
         self.browse_btn.setEnabled(not use_active)
+
+    def _update_python_inputs(self):
+        # currently always enabled but helper kept for future rules
+        self.python_edit.setEnabled(True)
+        self.python_browse.setEnabled(True)
 
     def save_settings(self):
         """Persist user changes to JSONConfig."""
@@ -178,6 +201,7 @@ class MCPServerRechercheConfigWidget(QWidget):
             library_path = os.path.normpath(library_path)
         prefs['library_path'] = library_path
         prefs['use_active_library'] = self.use_active_checkbox.isChecked()
+        prefs['python_executable'] = self.python_edit.text().strip()
         self._persist_provider_settings()
         self._update_selection_labels()
 
