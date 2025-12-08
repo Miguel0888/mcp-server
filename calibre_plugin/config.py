@@ -58,6 +58,9 @@ prefs.defaults['request_timeout'] = 15
 prefs.defaults['min_hits_required'] = 3
 prefs.defaults['max_refinement_rounds'] = 2
 prefs.defaults['context_influence'] = 50
+# Benutzeranpassbare Prompt-Zusaetze
+prefs.defaults['query_planner_hint'] = ''
+prefs.defaults['answer_style_hint'] = ''
 
 # Schlagwort-/Keyword-Suche
 prefs.defaults['use_llm_query_planning'] = True
@@ -172,6 +175,21 @@ class MCPServerRechercheConfigWidget(QWidget):
         self.context_influence_edit = _make_int_edit('context_influence', 50)
         tuning_form.addRow(_('Kontext-Einfluss (0-100, hoeher = staerkerer Bezug auf vorige Fragen):'),
                            self.context_influence_edit)
+
+        # Benutzeranpassbare Prompt-Zusaetze
+        self.query_planner_hint_edit = QLineEdit(self)
+        self.query_planner_hint_edit.setText(prefs.get('query_planner_hint', ''))
+        self.query_planner_hint_edit.setPlaceholderText(
+            _('Optionaler Zusatz fuer die Query-Planung, z. B. "nutze immer Fachbegriffe aus der Elektrotechnik"')
+        )
+        tuning_form.addRow(_('Hinweis fuer Query-Planer-Prompt:'), self.query_planner_hint_edit)
+
+        self.answer_style_hint_edit = QLineEdit(self)
+        self.answer_style_hint_edit.setText(prefs.get('answer_style_hint', ''))
+        self.answer_style_hint_edit.setPlaceholderText(
+            _('Optionaler Zusatz fuer die Antwort, z. B. "erklaere verstaendlich fuer Studierende"')
+        )
+        tuning_form.addRow(_('Hinweis fuer Antwort-Prompt:'), self.answer_style_hint_edit)
 
         # Info label
         info = QLabel(
@@ -329,6 +347,8 @@ class MCPServerRechercheConfigWidget(QWidget):
         prefs['max_refinement_rounds'] = _read_int(self.max_refinement_rounds_edit, 2)
         ci = _read_int(self.context_influence_edit, 50)
         prefs['context_influence'] = max(0, min(ci, 100))
+        prefs['query_planner_hint'] = self.query_planner_hint_edit.text().strip()
+        prefs['answer_style_hint'] = self.answer_style_hint_edit.text().strip()
 
         # Suchmodus
         prefs['use_llm_query_planning'] = self.use_llm_planning_checkbox.isChecked()

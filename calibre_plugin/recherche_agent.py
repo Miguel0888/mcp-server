@@ -186,6 +186,9 @@ class RechercheAgent(object):
         context_text = "\n".join(context_lines)
 
         if use_llm:
+            extra_hint = str(self.prefs.get('query_planner_hint', '') or '').strip()
+            hint_block = f"\n\nZUSAETZLICHER HINWEIS DES BENUTZERS FUER DIE QUERY-PLANUNG:\n{extra_hint}" if extra_hint else ""
+
             planning_prompt = (
                 "Du agierst als Query-Planer fuer eine Volltextsuche in einer technischen Bibliothek.\n"
                 "Deine Aufgabe ist es, aus der Nutzerfrage (und dem vorangegangenen Kontext)\n"
@@ -196,7 +199,8 @@ class RechercheAgent(object):
                 "- Du darfst bei Bedarf boolsche Operatoren AND/OR nutzen, aber keine komplexen Ausdruecke.\n"
                 "- Jede Zeile soll eine eigenstaendige Suchanfrage sein (wie bei einer Suchmaschine).\n"
                 "- Vermeide Hoeflichkeitsfloskeln und Funktionsverben (z. B. 'erkläre', 'sag mir', 'bitte').\n"
-                "- Nutze gegebenenfalls auch anderssprachige Fachbegriffe, wenn diese ueblich sind.\n\n"
+                "- Nutze gegebenenfalls auch anderssprachige Fachbegriffe, wenn diese ueblich sind.\n"
+                f"{hint_block}\n\n"
                 f"KONTEXT:\n{context_text}\n\n"
                 "Gib bis zu drei Suchabfragen aus, jeweils eine pro Zeile, ohne weitere Erklaerungen."
             )
@@ -503,6 +507,12 @@ class RechercheAgent(object):
                 lines.append("")
             context_block = "\n".join(lines)
 
+        extra_answer_hint = str(self._pref_value('answer_style_hint', '') or '').strip()
+        hint_line = "" if not extra_answer_hint else (
+            "Zusaetzlicher Stil-/Inhalts-Hinweis des Benutzers fuer die Antwort:\n"
+            f"{extra_answer_hint}\n\n"
+        )
+
         prompt = (
             "Du bist ein Recherche-Assistent fuer eine Calibre-Bibliothek.\n"
             "Nutze ausschliesslich den Kontext unten, antworte in sachlichem Deutsch\n"
@@ -511,6 +521,7 @@ class RechercheAgent(object):
             "aber mache daraus keine eigenen offenen Punkte.\n"
             "Trenne klar zwischen Wissen aus den Treffern und allgemeinem Hintergrundwissen,\n"
             "das du nur sparsam und deutlich gekennzeichnet einsetzen sollst.\n\n"
+            f"{hint_line}"
             f"FRAGE:\n{question}\n\n"
             f"KONTEXT AUS DER BIBLIOTHEK:\n{context_block}\n\n"
             "Strukturiere deine Antwort in genau drei Teilen:\n"
