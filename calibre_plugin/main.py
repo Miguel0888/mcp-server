@@ -14,7 +14,6 @@ if False:
 
 import logging
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -31,6 +30,7 @@ from qt.core import (
 
 from calibre_plugins.mcp_server_recherche.config import prefs
 from calibre_plugins.mcp_server_recherche.provider_client import ChatProviderClient
+from calibre_plugins.mcp_server_recherche.server_runner import MCPServerThread
 
 
 log = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ class MCPServerRechercheDialog(QDialog):
         self.db = gui.current_db
 
         self.server_running = False
-        self.server_process: subprocess.Popen | None = None
+        self.server_thread: MCPServerThread | None = None
         self.chat_client = ChatProviderClient(prefs)
         self.pending_request = False
 
@@ -169,61 +169,16 @@ class MCPServerRechercheDialog(QDialog):
             self.chat_view.append('System: Kein Calibre-Bibliothekspfad konfiguriert und kein aktuelle Bibliothek gefunden.')
             return
 
-        if self.server_process and self.server_process.poll() is None:
+        if self.server_thread and self.server_thread.is_running:
             self.chat_view.append('System: MCP Server laeuft bereits.')
             return
 
-        python_cmd = self._python_executable()
-        if not python_cmd:
-            self.chat_view.append('System: Kein Python-Interpreter gefunden. Bitte in den Einstellungen setzen.')
-            return
-
-        env = os.environ.copy()
-        env['MCP_SERVER_HOST'] = host
-        env['MCP_SERVER_PORT'] = str(port)
-        env['CALIBRE_LIBRARY_PATH'] = library_path
-        plugin_path = str(self.plugin_root)
-        extra_paths = [plugin_path]
-        if self.server_package.exists():
-            extra_paths.append(str(self.server_package.parent))
-        existing = env.get('PYTHONPATH')
-        if existing:
-            extra_paths.append(existing)
-        env['PYTHONPATH'] = os.pathsep.join(extra_paths)
-
-        cmd = [python_cmd, '-m', 'calibre_mcp_server.websocket_server']
-        log.info("Starting MCP server command=%s cwd=%s env=%s", cmd, self.plugin_root, {k: env.get(k) for k in ('MCP_SERVER_HOST','MCP_SERVER_PORT','CALIBRE_LIBRARY_PATH','PYTHONPATH')})
-
-        try:
-            self.server_process = subprocess.Popen(
-                cmd,
-                env=env,
-                cwd=str(self.plugin_root),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding='utf-8',
-            )
-        except OSError as exc:
-            log.exception('Failed to start MCP server process')
-            self.chat_view.append(f'System: Start fehlgeschlagen ({exc}).')
-            self.server_process = None
-            return
-
-        try:
-            code = self.server_process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            code = None
-
-        if code is not None:
-            stderr = self._read_stream(self.server_process.stderr)
-            stdout = self._read_stream(self.server_process.stdout)
-            self.server_process = None
-            self.chat_view.append(f'System: MCP Server konnte nicht starten (Code {code}).')
-            if stderr:
-                self.chat_view.append(f'stderr: {stderr[:500]}')
-            if stdout:
-                self.chat_view.append(f'stdout: {stdout[:500]}')
+        self.server_thread = MCPServerThread(host, port, library_path)
+        self.server_thread.start()
+        if not self.server_thread.wait_until_started(timeout=3):
+            error = self.server_thread.last_error or 'Unbekannter Fehler'
+            self.chat_view.append(f'System: MCP Server konnte nicht starten: {error}')
+            self.server_thread = None
             return
 
         self.server_running = True
@@ -231,33 +186,25 @@ class MCPServerRechercheDialog(QDialog):
         self.chat_view.append(f'System: MCP Server gestartet auf ws://{host}:{port}.')
         self.server_monitor.start()
 
-    def _read_stream(self, stream):
-        if not stream:
-            return ''
-        try:
-            data = stream.read()
-        except Exception:
-            data = ''
-        return (data or '').strip()
-
     def _stop_server(self):
-        if self.server_process:
-            try:
-                self.server_process.terminate()
-            except Exception:
-                pass
-            self.server_process = None
+        if self.server_thread:
+            self.server_thread.stop()
+            self.server_thread = None
         self.server_running = False
         self.server_button.setText('Server starten')
         self.chat_view.append('System: MCP Server wurde gestoppt.')
         self.server_monitor.stop()
 
     def _monitor_server(self):
-        if self.server_process and self.server_process.poll() is not None:
-            self.server_process = None
+        if self.server_thread and not self.server_thread.is_running:
+            error = self.server_thread.last_error
+            self.server_thread = None
             self.server_running = False
             self.server_button.setText('Server starten')
-            self.chat_view.append('System: MCP Server beendet.')
+            msg = 'System: MCP Server beendet.'
+            if error:
+                msg += f' Fehler: {error}'
+            self.chat_view.append(msg)
             self.server_monitor.stop()
 
     def closeEvent(self, event):

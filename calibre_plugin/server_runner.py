@@ -15,6 +15,7 @@ class MCPServerThread(threading.Thread):
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.server: Optional[MCPWebSocketServer] = None
         self.started_event = threading.Event()
+        self._shutdown_event: Optional[asyncio.Event] = None
         self._is_running = False
         self.last_error: Optional[str] = None
 
@@ -32,31 +33,38 @@ class MCPServerThread(threading.Thread):
                 calibre_library_path=self.library_path,
             )
             self.server = MCPWebSocketServer(cfg)
-            self._is_running = True
-            self.started_event.set()
-            self.loop.run_until_complete(self._run())
+            self._shutdown_event = asyncio.Event()
+            self.loop.run_until_complete(self._run_server())
         except Exception as exc:  # noqa: BLE001
             self.last_error = str(exc)
             self.started_event.set()
         finally:
             self._is_running = False
+            try:
+                if self.loop and self.loop.is_running():
+                    self.loop.stop()
+            except Exception:  # pragma: no cover
+                pass
             if self.loop:
                 self.loop.close()
 
-    async def _run(self) -> None:
+    async def _run_server(self) -> None:
         assert self.server is not None
+        assert self._shutdown_event is not None
         await self.server.start()
+        self._is_running = True
+        self.started_event.set()
         try:
-            await asyncio.Future()
+            await self._shutdown_event.wait()
         finally:
             await self.server.stop()
 
     def wait_until_started(self, timeout: float = 3.0) -> bool:
-        return self.started_event.wait(timeout) and self._is_running
+        started = self.started_event.wait(timeout)
+        return started and self._is_running and not self.last_error
 
     def stop(self) -> None:
         self._is_running = False
-        if self.loop:
-            self.loop.call_soon_threadsafe(self.loop.stop)
-
-
+        if self.loop and self._shutdown_event:
+            self.loop.call_soon_threadsafe(self._shutdown_event.set)
+        self.join(timeout=2)
