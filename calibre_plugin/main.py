@@ -944,3 +944,129 @@ class MCPServerRechercheDialog(QDialog):
         except Exception:
             log.exception('Fehler beim Schreiben der Quellen-Exportdatei')
             self._enqueue_status('Fehler beim Speichern der Quellen-Exportdatei.')
+
+    def update_sources(self, source_hits: list[dict]):
+        """Aktualisiere die angezeigten Quellen im rechten Panel.
+
+        Fuehrt die folgenden Schritte aus:
+        - Interne _source_hits-Liste aktualisieren
+        - UI-Elemente im Quellen-Panel neu aufbauen
+        """
+        if not source_hits:
+            return
+
+        # Interne Quelle-Liste aktualisieren
+        self._source_hits = source_hits
+
+        # Quellen-Panel leeren
+        self.sources_layout.clear()
+
+        # Fuer jeden Treffer ein Panel mit Titel, ISBN, Excerpt-Vorschau
+        # und aufklappbarem Volltext.
+        for hit in self._source_hits:
+            container = QWidget(self.sources_panel)
+            lay = QVBoxLayout(container)
+            lay.setContentsMargins(4, 4, 4, 4)
+            lay.setSpacing(2)
+
+            title = hit.get('title') or 'Unbekannter Titel'
+            isbn = hit.get('isbn') or ''
+            book_id = int(hit.get('book_id')) if hit.get('book_id') is not None else None
+
+            header_row = QHBoxLayout()
+            # Markierungs-Button LINKS neben dem Titel, damit er auch bei
+            # kleiner Fensterbreite sichtbar bleibt.
+            mark_btn = QToolButton(container)
+            mark_btn.setText('☆')
+            mark_btn.setCheckable(True)
+            mark_btn.setToolTip('Buch in Calibre markieren/entmarkieren (marked:true)')
+            mark_btn.clicked.connect(
+                lambda checked, bid=book_id: self._toggle_mark_book(bid, checked)
+            )
+            header_row.addWidget(mark_btn)
+
+            header_label = QLabel(f"{title}", container)
+            header_label.setStyleSheet('font-weight: bold;')
+            header_row.addWidget(header_label)
+            if isbn:
+                header_row.addWidget(QLabel(f"ISBN: {isbn}", container))
+            header_row.addStretch(1)
+            lay.addLayout(header_row)
+
+            excerpt_full = (hit.get('excerpt') or '').strip()
+            if excerpt_full:
+                # Preview (erste Zeilen des aktuellen Excerpts)
+                preview_lines = '\n'.join(excerpt_full.splitlines()[:3])
+                preview_label = QLabel(preview_lines, container)
+                preview_label.setStyleSheet('font-size: 10px; color: #555;')
+                preview_label.setWordWrap(True)
+                lay.addWidget(preview_label)
+
+                # Aufklappbarer Voll-Excerpt
+                toggle_row = QHBoxLayout()
+                toggle_row.setContentsMargins(0, 0, 0, 0)
+                toggle_row.setSpacing(2)
+                toggle_btn = QToolButton(container)
+                toggle_btn.setCheckable(True)
+                toggle_btn.setArrowType(Qt.RightArrow)
+                toggle_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+                toggle_row.addWidget(toggle_btn)
+                desc_label = QLabel('Auszug anzeigen', container)
+                desc_label.setStyleSheet('font-size: 9px; color: #555;')
+                toggle_row.addWidget(desc_label)
+                toggle_row.addStretch(1)
+                lay.addLayout(toggle_row)
+
+                full_label = QTextEdit(container)
+                full_label.setReadOnly(True)
+                full_label.setPlainText(excerpt_full)
+                full_label.setVisible(False)
+                full_label.setStyleSheet('font-size: 10px; color: #555;')
+                full_label.setMaximumHeight(160)
+                lay.addWidget(full_label)
+
+                def _toggle_full(checked: bool, widget=full_label, btn=toggle_btn):
+                    widget.setVisible(checked)
+                    btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+
+                toggle_btn.toggled.connect(_toggle_full)
+
+            self.sources_layout.addWidget(container)
+
+        self.sources_layout.addStretch(1)
+
+    def _toggle_mark_book(self, book_id: int | None, checked: bool) -> None:
+        """Buch im Calibre-Hauptfenster markieren oder entmarkieren.
+
+        Verwendet die offizielle marked:true-Mechanik von Calibre:
+        - Alle aktuell markierten IDs werden ueber db.set_marked_ids verwaltet.
+        - Die GUI-Suche kann optional auf 'marked:true' gesetzt werden, damit
+          der Nutzer alle markierten Buecher sieht.
+        """
+        if book_id is None:
+            return
+        try:
+            db = self.db
+            current = set(getattr(db, 'marked_ids', []) or [])
+            if checked:
+                current.add(int(book_id))
+            else:
+                current.discard(int(book_id))
+            db.set_marked_ids(current)
+
+            # Optional: Suche auf marked:true setzen, damit der Nutzer die
+            # markierten Buecher sofort sieht. Wir erzwingen das hier nicht
+            # global, koennen es aber spaeter ueber eine Einstellung steuern.
+            try:
+                if current:
+                    self.gui.search.setEditText('marked:true')
+                    self.gui.search.do_search()
+                else:
+                    # Wenn keine Markierungen mehr vorhanden sind, Loeschung
+                    # der Suchanfrage dem Nutzer ueberlassen.
+                    pass
+            except Exception:
+                log.exception('Konnte Suche marked:true nicht aktualisieren')
+        except Exception:
+            log.exception('Failed to toggle marked state for book_id=%r', book_id)
+
