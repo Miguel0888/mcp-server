@@ -114,14 +114,9 @@ class MCPServerRechercheDialog(QDialog):
         self.calibre_library_path = self._detect_calibre_library()
         log.info("Detected Calibre library path: %s", self.calibre_library_path)
 
-        self.project_root = Path(__file__).resolve().parents[1]
-        self.dev_src_path = self.project_root / 'src'
-        self.packaged_root = self.project_root / 'calibre_mcp_server'
-        self.module_paths = []
-        if self.dev_src_path.exists():
-            self.module_paths.append(str(self.dev_src_path))
-        if self.packaged_root.exists():
-            self.module_paths.append(str(self.project_root))
+        self.module_roots = self._discover_module_roots()
+        self.server_cwd = Path(self.module_roots[0]) if self.module_roots else Path(__file__).resolve().parent
+        log.info("Discovered module roots: %s", self.module_roots)
 
     # ------------------------------------------------------------------ UI
 
@@ -176,9 +171,9 @@ class MCPServerRechercheDialog(QDialog):
         env['MCP_SERVER_HOST'] = host
         env['MCP_SERVER_PORT'] = str(port)
         env['CALIBRE_LIBRARY_PATH'] = library_path
-        if self.module_paths:
+        if self.module_roots:
             existing = env.get('PYTHONPATH')
-            paths = list(self.module_paths)
+            paths = list(self.module_roots)
             if existing:
                 paths.append(existing)
             env['PYTHONPATH'] = os.pathsep.join(paths)
@@ -194,13 +189,13 @@ class MCPServerRechercheDialog(QDialog):
 
         python_cmd = self._python_executable()
         cmd = [python_cmd, '-m', 'calibre_mcp_server.websocket_server']
-        log.info("Command: %s cwd=%s", cmd, self.project_root)
+        log.info("Command: %s cwd=%s", cmd, self.server_cwd)
 
         try:
             self.server_process = subprocess.Popen(
                 cmd,
                 env=env,
-                cwd=str(self.project_root),
+                cwd=str(self.server_cwd),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -331,3 +326,23 @@ class MCPServerRechercheDialog(QDialog):
                 python_cmd = preferred
         return python_cmd
 
+    def _discover_module_roots(self) -> list[str]:
+        module_dir = Path(__file__).resolve()
+        roots: list[str] = []
+        seen: set[str] = set()
+
+        def add_path(path: Path) -> None:
+            if path.exists():
+                s = str(path)
+                if s not in seen:
+                    roots.append(s)
+                    seen.add(s)
+
+        for parent in module_dir.parents:
+            src_candidate = parent / 'src' / 'calibre_mcp_server'
+            if src_candidate.exists():
+                add_path(parent / 'src')
+            pkg_candidate = parent / 'calibre_mcp_server'
+            if pkg_candidate.exists():
+                add_path(parent)
+        return roots
