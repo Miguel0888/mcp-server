@@ -11,34 +11,93 @@ from calibre.customize import InterfaceActionBase
 
 import sys
 from pathlib import Path
-import importlib.util
 import zipfile
 import pkgutil
+import tempfile
+import os
 
-PLUGIN_DIR = Path(__file__).resolve().parent
-ZIP_PATH = PLUGIN_DIR.parent.with_suffix('.zip')
-if ZIP_PATH.exists():
-    sys.path.insert(0, str(ZIP_PATH))
 
-MODULE_PATHS = [PLUGIN_DIR]
-SRC_DIR = PLUGIN_DIR.parent / 'src'
-if SRC_DIR.exists():
-    MODULE_PATHS.append(SRC_DIR)
-for path in MODULE_PATHS:
-    str_path = str(path)
-    if str_path not in sys.path:
-        sys.path.insert(0, str_path)
+# ---------------------------------------------------------------------------
+# Bootstrap sys.path so that:
+# - the plugin package itself (calibre_plugins.mcp_server_recherche)
+# - the bundled MCP server package (calibre_mcp_server)
+# - und ALLE Dependencies aus site-packages/
+# importierbar sind – sowohl im ZIP-Plugin als auch im Dev-Ordner.
+# ---------------------------------------------------------------------------
 
-# ensure third-party dependencies bundled alongside plugin are importable
-site_packages_dir = PLUGIN_DIR / 'site-packages'
-if site_packages_dir.exists():
-    sys.path.insert(0, str(site_packages_dir))
-loader = pkgutil.get_loader(__name__)
-archive_path = getattr(loader, 'archive', None)
-if archive_path:
-    zip_site_packages = f"{archive_path}/site-packages"
-    if zip_site_packages not in sys.path:
-        sys.path.insert(0, zip_site_packages)
+def _bootstrap_module_paths():
+    plugin_dir = Path(__file__).resolve().parent
+    parent = plugin_dir.parent
+
+    # 1) Plugin-Ordner selber
+    if str(plugin_dir) not in sys.path:
+        sys.path.insert(0, str(plugin_dir))
+
+    # 2) Optional: ./src für Dev-Modus
+    src_dir = parent / "src"
+    if src_dir.is_dir():
+        src_str = str(src_dir)
+        if src_str not in sys.path:
+            sys.path.insert(0, src_str)
+
+
+def _bootstrap_site_packages():
+    """
+    Stelle sicher, dass der Inhalt von site-packages importierbar ist.
+
+    - Im Dev-Modus: <plugin_dir>/site-packages als echter Ordner.
+    - Im ZIP-Plugin: site-packages/ aus dem ZIP in einen Temp-Ordner entpacken
+      und diesen Ordner auf sys.path legen.
+    """
+    plugin_dir = Path(__file__).resolve().parent
+    # Fall 1: entpacktes Plugin mit realem site-packages-Ordner
+    site_dir = plugin_dir / "site-packages"
+    if site_dir.is_dir():
+        site_str = str(site_dir)
+        if site_str not in sys.path:
+            sys.path.insert(0, site_str)
+        return
+
+    # Fall 2: Plugin als ZIP – __file__ zeigt auf .../plugin.zip/__init__.py
+    loader = pkgutil.get_loader(__name__)
+    archive_path = getattr(loader, "archive", None)
+    if not archive_path or not archive_path.lower().endswith(".zip"):
+        # Kein ZIP-Plugin, nichts weiter zu tun
+        return
+
+    try:
+        with zipfile.ZipFile(archive_path) as zf:
+            # Alle Einträge unterhalb von site-packages/
+            members = [n for n in zf.namelist() if n.startswith("site-packages/")]
+            if not members:
+                return
+
+            tmp_root = Path(tempfile.mkdtemp(prefix="mcp_site_"))
+
+            # Struktur unterhalb von site-packages/ erhalten
+            for name in members:
+                rel = name[len("site-packages/"):]
+                if not rel:
+                    continue
+                target = tmp_root / rel
+                if name.endswith("/"):
+                    target.mkdir(parents=True, exist_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(name) as src, open(target, "wb") as dst:
+                        dst.write(src.read())
+
+            tmp_str = str(tmp_root)
+            if tmp_str not in sys.path:
+                sys.path.insert(0, tmp_str)
+    except Exception:
+        # Im Fehlerfall nicht crashen – dann greifen ggf. globale Installationen
+        # von websockets/fastmcp, falls vorhanden.
+        return
+
+
+_bootstrap_module_paths()
+_bootstrap_site_packages()
 
 
 class MCPServerRecherchePlugin(InterfaceActionBase):
@@ -84,15 +143,10 @@ class MCPServerRecherchePlugin(InterfaceActionBase):
         return a tuple of two strings (message, details), these will be
         displayed as a warning dialog to the user and the process will be
         aborted.
-
-        The base class implementation of this method raises NotImplementedError
-        so by default no user configuration is possible.
         '''
-        # It is important to put this import statement here rather than at the
-        # top of the module as importing the config class will also cause the
-        # GUI libraries to be loaded, which we do not want when using calibre
-        # from the command line
-        from calibre_plugins.mcp_server_recherche.config import MCPServerRechercheConfigWidget
+        from calibre_plugins.mcp_server_recherche.config import (
+            MCPServerRechercheConfigWidget,
+        )
         return MCPServerRechercheConfigWidget()
 
     def save_settings(self, config_widget):
