@@ -22,9 +22,9 @@ jobs:
           python -m venv .venv
           source .venv/bin/activate
           pip install --upgrade pip
-          pip install websockets fastmcp
+          pip install --no-compile --no-cache-dir websockets fastmcp
           mkdir -p build/plugin/site-packages
-          pip install websockets fastmcp -t build/plugin/site-packages
+          pip install --no-compile --no-cache-dir -t build/plugin/site-packages websockets fastmcp
           deactivate
           cd build/plugin
           zip -r ../../dist/calibre-mcp-plugin.zip .
