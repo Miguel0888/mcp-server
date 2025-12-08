@@ -138,12 +138,14 @@ class MCPServerRechercheDialog(QDialog):
         library_path = prefs['library_path'].strip()
         if not library_path:
             library_path = getattr(self.db, 'library_path', '') or ''
+        if not library_path:
+            self.chat_view.append('System: Kein Calibre-Bibliothekspfad konfiguriert.')
+            return
 
         env = os.environ.copy()
         env['MCP_SERVER_HOST'] = host
         env['MCP_SERVER_PORT'] = str(port)
-        if library_path:
-            env['CALIBRE_LIBRARY_PATH'] = library_path
+        env['CALIBRE_LIBRARY_PATH'] = library_path
 
         cmd = [sys.executable, '-m', 'calibre_mcp_server.websocket_server']
 

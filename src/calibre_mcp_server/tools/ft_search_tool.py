@@ -46,10 +46,8 @@ def register_ft_search_tool(mcp: FastMCP, registry: PluginRegistry) -> None:
             )
             processed_hits = registry.apply_fulltext_plugins(raw_hits)
         except Exception as exc:  # pylint: disable=broad-except
-            # Raise generic error so MCP client sees a tool error without
-            # depending on fastmcp internals.
             raise RuntimeError(
-                f"Full-text search failed: {type(exc).__name__}"
+                f"Full-text search failed: {type(exc).__name__}: {exc}"
             ) from exc
 
         return FulltextSearchOutput(

@@ -72,6 +72,7 @@ class MCPServerRechercheConfigWidget(QWidget):
         lib_row = QHBoxLayout()
         self.library_edit = QLineEdit(self)
         self.library_edit.setText(prefs['library_path'])
+        self.library_edit.setPlaceholderText(_('z. B. X:/E-Books'))
 
         browse_btn = QPushButton(_('Auswahl'), self)
         browse_btn.clicked.connect(self.choose_library)
@@ -154,7 +155,10 @@ class MCPServerRechercheConfigWidget(QWidget):
         """Persist user changes to JSONConfig."""
         prefs['server_host'] = self.host_edit.text().strip() or '127.0.0.1'
         prefs['server_port'] = self.port_edit.text().strip() or '8765'
-        prefs['library_path'] = self.library_edit.text().strip()
+        library_path = self.library_edit.text().strip()
+        if library_path:
+            library_path = os.path.normpath(library_path)
+        prefs['library_path'] = library_path
         self._persist_provider_settings()
         self._update_selection_labels()
 
