@@ -18,7 +18,7 @@ jobs:
         run: |
           mkdir -p dist build/plugin
           rsync -av calibre_plugin/ build/plugin/
-          rsync -av src/calibre_mcp_server build/plugin/calibre_mcp_server
+          rsync -av src/calibre_mcp_server/ build/plugin/calibre_mcp_server/
           cd build/plugin
           zip -r ../../dist/calibre-mcp-plugin.zip .
 
