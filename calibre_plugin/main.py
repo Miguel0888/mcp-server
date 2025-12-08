@@ -15,6 +15,8 @@ if False:
 import logging
 import os
 import sys
+import shutil
+import subprocess
 from pathlib import Path
 
 from qt.core import (
@@ -35,6 +37,86 @@ from calibre_plugins.mcp_server_recherche.server_runner import MCPServerThread
 
 log = logging.getLogger(__name__)
 
+def _is_calibre_executable(path):
+    """Return True if executable is likely a calibre launcher."""
+    if not path:
+        return False
+    name = os.path.basename(path).lower()
+    return (
+        name.startswith("calibre-")
+        or name == "calibre.exe"
+        or name == "calibre-debug.exe"
+        or name == "calibre-parallel.exe"
+    )
+
+def _auto_detect_python_executable(override_from_prefs):
+    """Resolve a suitable python executable."""
+    candidates = []
+
+    # Prefer explicit override if vorhanden
+    if override_from_prefs:
+        candidates.append(override_from_prefs)
+
+    is_windows = os.name == "nt"
+
+    if is_windows:
+        # Try Python on PATH
+        candidates.append(shutil.which("python"))
+        candidates.append(shutil.which("python3"))
+
+        # Try py launcher
+        py = shutil.which("py")
+        if py:
+            try:
+                proc = subprocess.Popen(
+                    [py, "-3", "-c", "import sys; print(sys.executable)"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                out, err = proc.communicate(timeout=5)
+                if proc.returncode == 0:
+                    resolved = (out or "").strip()
+                    candidates.append(resolved)
+                else:
+                    logging.getLogger(__name__).info(
+                        "py launcher returned %s, stderr=%r", proc.returncode, err
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logging.getLogger(__name__).info("py launcher not usable: %s", exc)
+    else:
+        # Unix: prefer python3, then python
+        candidates.append(shutil.which("python3"))
+        candidates.append(shutil.which("python"))
+
+    # Fallback: sys.executable, wenn es kein calibre-Wrapper ist
+    if sys.executable and not _is_calibre_executable(sys.executable):
+        candidates.append(sys.executable)
+
+    # Deduplicate and filter
+    seen = set()
+    valid = []
+    for c in candidates:
+        if not c:
+            continue
+        if c in seen:
+            continue
+        seen.add(c)
+        if not os.path.exists(c):
+            continue
+        if _is_calibre_executable(c):
+            continue
+        valid.append(c)
+
+    if not valid:
+        raise RuntimeError(
+            "Kein geeigneter Python-Interpreter gefunden. "
+            "Bitte in den MCP Server Recherche-Einstellungen den Pfad zu python.exe konfigurieren."
+        )
+
+    chosen = valid[0]
+    logging.getLogger(__name__).info("Auto-detected Python executable: %s", chosen)
+    return chosen
 
 class MCPServerRechercheDialog(QDialog):
     """Main dialog for MCP Server Recherche (pure UI stub)."""
@@ -239,13 +321,20 @@ class MCPServerRechercheDialog(QDialog):
         self.send_button.setText('Senden...' if busy else 'Senden')
 
     def _python_executable(self) -> str:
-        override = prefs.get('python_executable', '').strip()
-        if override:
-            return override
-        python_cmd = sys.executable
-        basename = os.path.basename(python_cmd).lower()
-        if basename.startswith('calibre-') or basename == 'pythonw.exe':
-            preferred = shutil.which('python') or shutil.which('python3')
-            if preferred:
-                python_cmd = preferred
-        return python_cmd
+        auto = prefs.get('auto_detect_python', True)
+        override = (prefs.get('python_executable') or '').strip()
+
+        if not auto:
+            # Manual mode: require a configured path
+            if override:
+                log.info("Using Python from prefs: %s", override)
+                return override
+            # Kein Pfad konfiguriert -> sinnvoller Fehler statt kryptischem Code
+            raise RuntimeError(
+                "Python-Interpreter ist nicht konfiguriert. "
+                "Entweder einen Pfad setzen oder 'Python automatisch ermitteln' aktivieren."
+            )
+
+        # Auto-Modus: versuche, einen passenden Interpreter zu finden
+        return _auto_detect_python_executable(override)
+

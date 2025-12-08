@@ -44,6 +44,7 @@ prefs.defaults['models'] = {}
 prefs.defaults['selected_model'] = {}
 prefs.defaults['use_active_library'] = True
 prefs.defaults['python_executable'] = ''
+prefs.defaults['auto_detect_python'] = True
 ensure_model_prefs(prefs)
 
 
@@ -101,6 +102,12 @@ class MCPServerRechercheConfigWidget(QWidget):
         python_row.addWidget(python_browse)
         server_form.addRow(_('Python-Interpreter (optional):'), python_row)
         self.python_browse = python_browse
+
+        # Auto-detect Checkbox
+        self.auto_python_checkbox = QCheckBox(_('Python automatisch ermitteln'), self)
+        self.auto_python_checkbox.setChecked(prefs.get('auto_detect_python', True))
+        self.auto_python_checkbox.stateChanged.connect(self._python_mode_changed)
+        server_form.addRow('', self.auto_python_checkbox)
 
         # Info label
         info = QLabel(
@@ -192,21 +199,31 @@ class MCPServerRechercheConfigWidget(QWidget):
         self.library_edit.setEnabled(not use_active)
         self.browse_btn.setEnabled(not use_active)
 
+    def _python_mode_changed(self, state):
+        # Persist auto-detect flag and update inputs
+        prefs['auto_detect_python'] = bool(state)
+        self._update_python_inputs()
+
     def _update_python_inputs(self):
-        # currently always enabled but helper kept for future rules
-        self.python_edit.setEnabled(True)
-        self.python_browse.setEnabled(True)
+        auto = getattr(self, 'auto_python_checkbox', None)
+        auto_enabled = auto.isChecked() if auto is not None else True
+        self.python_edit.setEnabled(not auto_enabled)
+        self.python_browse.setEnabled(not auto_enabled)
 
     def save_settings(self):
         """Persist user changes to JSONConfig."""
         prefs['server_host'] = self.host_edit.text().strip() or '127.0.0.1'
         prefs['server_port'] = self.port_edit.text().strip() or '8765'
+
         library_path = self.library_edit.text().strip()
         if library_path:
             library_path = os.path.normpath(library_path)
         prefs['library_path'] = library_path
         prefs['use_active_library'] = self.use_active_checkbox.isChecked()
+
+        prefs['auto_detect_python'] = self.auto_python_checkbox.isChecked()
         prefs['python_executable'] = self.python_edit.text().strip()
+
         self._persist_provider_settings()
         self._update_selection_labels()
 
