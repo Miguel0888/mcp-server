@@ -38,6 +38,9 @@ from qt.core import (
     QStyle,
     Qt,
     QSizePolicy,
+    QThread,
+    QObject,
+    pyqtSignal,
 )
 
 from calibre_plugins.mcp_server_recherche.config import prefs
@@ -46,6 +49,26 @@ from calibre_plugins.mcp_server_recherche.recherche_agent import RechercheAgent
 
 
 log = logging.getLogger(__name__)
+
+
+class AgentWorker(QObject):
+    """Worker-Objekt, das den RechercheAgent im Hintergrund ausfuehrt."""
+
+    finished = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(self, agent: RechercheAgent, question: str, parent: QObject | None = None):
+        super().__init__(parent)
+        self._agent = agent
+        self._question = question
+
+    def run(self) -> None:
+        try:
+            response = self._agent.answer_question(self._question)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.finished.emit(response or "")
 
 
 class ChatMessageWidget(QFrame):
@@ -247,6 +270,8 @@ class ChatPanel(QWidget):
 class MCPServerRechercheDialog(QDialog):
     """Main dialog for MCP Server Recherche."""
 
+    trace_signal = pyqtSignal(str)
+
     def __init__(self, gui, icon, do_user_config):
         QDialog.__init__(self, gui)
         self.gui = gui
@@ -350,7 +375,11 @@ class MCPServerRechercheDialog(QDialog):
         self._trace_buffer: list[str] = []
         self._trace_title: str | None = None
         self._current_ai_message: ChatMessageWidget | None = None
-        self.agent = RechercheAgent(prefs, trace_callback=self._append_trace)
+
+        # Trace-Signal vom Worker in den UI-Thread verbinden
+        self.trace_signal.connect(self._append_trace)
+
+        self.agent = RechercheAgent(prefs, trace_callback=self._trace_from_worker)
 
     # ----------------------------- Statusbar-Helfer ---------------------
 
@@ -568,8 +597,17 @@ class MCPServerRechercheDialog(QDialog):
         self._trace_buffer = []
         self._trace_title = None
         self._current_ai_message = None
-        self.agent = RechercheAgent(prefs, trace_callback=self._append_trace)
+        self.agent = RechercheAgent(prefs, trace_callback=self._trace_from_worker)
         self._enqueue_status('Neuer Chat gestartet.')
+
+    def _trace_from_worker(self, message: str) -> None:
+        """Trace-Callback, der aus dem Worker-Thread kommt.
+
+        Wir leiten die Meldung per Qt-Signal in den UI-Thread weiter,
+        damit _append_trace niemals direkt aus dem Worker heraus UI
+        anfassen muss.
+        """
+        self.trace_signal.emit(message or "")
 
     def send_message(self):
         if self.pending_request:
@@ -593,32 +631,45 @@ class MCPServerRechercheDialog(QDialog):
         QTimer.singleShot(0, lambda: self._process_chat(text))
 
     def _process_chat(self, text: str):
-        try:
-            self._enqueue_status('Starte Recherche uebers MCP-Backend ...')
-            response = self.agent.answer_question(text)
-        except Exception as exc:
-            log.exception("Research agent failed")
-            self._enqueue_status(f'Fehler in der Recherche-Pipeline: {exc}')
-        else:
-            if response:
-                # Endgueltige Antwort in den bereits vorhandenen AI-Block
-                # einfuegen und Groesse automatisch anpassen.
-                if self._current_ai_message is not None:
-                    self._current_ai_message.set_message_text(response)
-                    if self._trace_title and self._trace_buffer:
-                        content = "\n".join(self._trace_buffer)
-                        self._current_ai_message.update_trace(self._trace_title, content)
-                else:
-                    # Fallback, falls aus irgendeinem Grund kein AI-Block existiert
-                    tool_trace = "\n".join(self._trace_buffer) if self._trace_buffer else None
-                    self._current_ai_message = self.chat_panel.add_ai_message(response, tool_trace=tool_trace)
+        """Starte den Agenten in einem eigenen Thread."""
+        self._enqueue_status('Starte Recherche uebers MCP-Backend ...')
+
+        self._agent_thread = QThread(self)
+        self._agent_worker = AgentWorker(self.agent, text)
+        self._agent_worker.moveToThread(self._agent_thread)
+
+        self._agent_thread.started.connect(self._agent_worker.run)
+        self._agent_worker.finished.connect(self._on_agent_finished)
+        self._agent_worker.failed.connect(self._on_agent_failed)
+        self._agent_worker.finished.connect(self._agent_thread.quit)
+        self._agent_worker.failed.connect(self._agent_thread.quit)
+        self._agent_thread.finished.connect(self._agent_worker.deleteLater)
+        self._agent_thread.finished.connect(self._agent_thread.deleteLater)
+
+        self._agent_thread.start()
+
+    def _on_agent_finished(self, response: str) -> None:
+        """Wird im UI-Thread aufgerufen, wenn der Agent fertig ist."""
+        if response:
+            if self._current_ai_message is not None:
+                self._current_ai_message.set_message_text(response)
+                if self._trace_title and self._trace_buffer:
+                    content = "\n".join(self._trace_buffer)
+                    self._current_ai_message.update_trace(self._trace_title, content)
             else:
-                self._enqueue_status('Keine Antwort vom Provider erhalten.')
-        finally:
-            self._toggle_send_state(False)
+                tool_trace = "\n".join(self._trace_buffer) if self._trace_buffer else None
+                self._current_ai_message = self.chat_panel.add_ai_message(response, tool_trace=tool_trace)
+        else:
+            self._enqueue_status('Keine Antwort vom Provider erhalten.')
+        self._toggle_send_state(False)
+
+    def _on_agent_failed(self, error_text: str) -> None:
+        """Agent hat mit Fehler abgebrochen (UI-Thread)."""
+        self._enqueue_status(f'Fehler in der Recherche-Pipeline: {error_text}')
+        self._toggle_send_state(False)
 
     def _append_trace(self, message: str):
-        """Trace-Callback fuer den Agenten.
+        """Trace-Callback fuer den Agenten (immer im UI-Thread).
 
         Debug-Ausgaben werden pro Frage als ein Block gesammelt. Der
         Beschreibungstext (Titel) kann sich waehrend des laufenden Steps
@@ -630,8 +681,6 @@ class MCPServerRechercheDialog(QDialog):
                 self._trace_title = text
             self._trace_buffer.append(text)
 
-        # Live-Update der aktuell sichtbaren AI-Nachricht: schon waehrend
-        # der Agent arbeitet aktualisieren wir Titel und Inhalt.
         if self._current_ai_message is not None:
             content = "\n".join(self._trace_buffer)
             title = self._trace_title if self.debug_checkbox.isChecked() else None
