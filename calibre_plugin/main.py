@@ -984,13 +984,13 @@ class MCPServerRechercheDialog(QDialog):
             container = QWidget(self.sources_panel)
             vlay = QVBoxLayout(container)
             vlay.setContentsMargins(4, 4, 4, 4)
-            vlay.setSpacing(4)
+            vlay.setSpacing(2)
 
             title = hit.get('title') or 'Unbekannter Titel'
             isbn = hit.get('isbn') or ''
             book_id = int(hit.get('book_id')) if hit.get('book_id') is not None else None
 
-            # Kopfzeile mit Stern und Titel/ISBN
+            # Kopfzeile mit Stern und Titel/ISBN (eine Zeile, oben)
             header_row = QHBoxLayout()
             header_row.setContentsMargins(0, 0, 0, 0)
             header_row.setSpacing(4)
@@ -998,6 +998,7 @@ class MCPServerRechercheDialog(QDialog):
             mark_btn = QToolButton(container)
             mark_btn.setCheckable(True)
             mark_btn.setToolTip('Buch in Calibre markieren/entmarkieren (marked:true)')
+            # aktuellen Markierungszustand aus der DB lesen, NICHT zuruecksetzen
             is_marked = False
             if book_id is not None:
                 try:
@@ -1009,13 +1010,15 @@ class MCPServerRechercheDialog(QDialog):
             mark_btn.setText('★' if is_marked else '☆')
 
             def _on_mark_toggled(checked: bool, bid=book_id, btn=mark_btn):
+                # Button-Zustand visuell anpassen und DB-Markierung erweitern/entfernen,
+                # ohne andere Markierungen zu loeschen.
                 btn.setText('★' if checked else '☆')
                 self._toggle_mark_book(bid, checked)
 
             mark_btn.toggled.connect(_on_mark_toggled)
             header_row.addWidget(mark_btn)
 
-            header_label = QLabel(f"{title}", container)
+            header_label = QLabel(title, container)
             header_label.setStyleSheet('font-weight: bold;')
             header_label.setWordWrap(True)
             header_row.addWidget(header_label)
@@ -1028,11 +1031,14 @@ class MCPServerRechercheDialog(QDialog):
             header_row.addStretch(1)
             vlay.addLayout(header_row)
 
-            # Excerpt-Zeile direkt unter dem Header: Pfeil + Label
+            # Excerpt-Zeile direkt unter dem Header: Pfeil links, Text rechts
             excerpt_full = (hit.get('excerpt') or '').strip()
             if excerpt_full:
-                preview_lines = '\n'.join(excerpt_full.splitlines()[:3])
-                preview_text = preview_lines
+                # Kurzfassung: nur wenige Zeilen anzeigen
+                lines = excerpt_full.splitlines()
+                preview_text = '\n'.join(lines[:3]).strip()
+                if not preview_text:
+                    preview_text = excerpt_full[:200].strip()
 
                 excerpt_row = QHBoxLayout()
                 excerpt_row.setContentsMargins(0, 0, 0, 0)
@@ -1043,7 +1049,7 @@ class MCPServerRechercheDialog(QDialog):
                 toggle_btn.setArrowType(Qt.RightArrow)
                 toggle_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
                 toggle_btn.setToolTip('Auszug ein- bzw. ausblenden')
-                excerpt_row.addWidget(toggle_btn)
+                excerpt_row.addWidget(toggle_btn, 0, Qt.AlignTop)
 
                 excerpt_label = QLabel(preview_text, container)
                 excerpt_label.setStyleSheet('font-size: 10px; color: #555;')
@@ -1056,7 +1062,7 @@ class MCPServerRechercheDialog(QDialog):
                                     btn=toggle_btn,
                                     full=excerpt_full,
                                     preview=preview_text):
-                    # Zwischen Preview- und Volltext-Excerpt umschalten
+                    # Beim Oeffnen kompletten Text anzeigen, beim Schliessen wieder Preview.
                     label.setText(full if checked else preview)
                     btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
 
@@ -1072,7 +1078,8 @@ class MCPServerRechercheDialog(QDialog):
 
         Verwendet die offizielle marked:true-Mechanik von Calibre:
         - Alle aktuell markierten IDs werden ueber db.set_marked_ids verwaltet.
-        - Die GUI-Suche kann optional auf 'marked:true' gesetzt werden, damit der Nutzer alle markierten Buecher sieht.
+        - Wichtig: bestehende Markierungen werden NICHT geloescht, sondern nur
+          um das eine Buch ergaenzt bzw. um dieses eine Buch reduziert.
         """
         if book_id is None:
             return
@@ -1083,19 +1090,14 @@ class MCPServerRechercheDialog(QDialog):
                 current.add(int(book_id))
             else:
                 current.discard(int(book_id))
+            # Nur die geaenderte Menge zurueckschreiben; andere Markierungen bleiben bestehen
             db.set_marked_ids(current)
 
-            # Optional: Suche auf marked:true setzen, damit der Nutzer die
-            # markierten Buecher sofort sieht. Wir erzwingen das hier nicht
-            # global, koennen es aber spaeter ueber eine Einstellung steuern.
+            # Optional: Suche auf marked:true setzen, wenn es mindestens eine Markierung gibt
             try:
                 if current:
                     self.gui.search.setEditText('marked:true')
                     self.gui.search.do_search()
-                else:
-                    # Wenn keine Markierungen mehr vorhanden sind, Loeschung
-                    # der Suchanfrage dem Nutzer ueberlassen.
-                    pass
             except Exception:
                 log.exception('Konnte Suche marked:true nicht aktualisieren')
         except Exception:
