@@ -964,17 +964,23 @@ class MCPServerRechercheDialog(QDialog):
         - Interne _source_hits-Liste aktualisieren
         - UI-Elemente im Quellen-Panel neu aufbauen
         """
-        if not source_hits:
-            return
-
-        # Interne Quelle-Liste aktualisieren
-        self._source_hits = source_hits
+        # Interne Quelle-Liste aktualisieren (auch wenn leer)
+        self._source_hits = source_hits or []
 
         # Quellen-Panel leeren
-        self.sources_layout.clear()
+        while self.sources_layout.count() > 0:
+            item = self.sources_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
 
-        # Fuer jeden Treffer ein Panel mit Titel, ISBN, Excerpt-Vorschau
-        # und aufklappbarem Volltext.
+        if not self._source_hits:
+            self.sources_layout.addStretch(1)
+            return
+
+        # Fuer jeden Treffer ein Panel mit Titel, ISBN und einem umschaltbaren
+        # Auszug (Preview <-> Volltext). Der Pfeil steht dabei vor dem Auszug,
+        # analog zum Stern vor dem Titel.
         for hit in self._source_hits:
             container = QWidget(self.sources_panel)
             lay = QVBoxLayout(container)
@@ -985,9 +991,8 @@ class MCPServerRechercheDialog(QDialog):
             isbn = hit.get('isbn') or ''
             book_id = int(hit.get('book_id')) if hit.get('book_id') is not None else None
 
+            # Kopfzeile mit Stern und Titel/ISBN
             header_row = QHBoxLayout()
-            # Markierungs-Button LINKS neben dem Titel, damit er auch bei
-            # kleiner Fensterbreite sichtbar bleibt.
             mark_btn = QToolButton(container)
             mark_btn.setText('☆')
             mark_btn.setCheckable(True)
@@ -1007,41 +1012,37 @@ class MCPServerRechercheDialog(QDialog):
 
             excerpt_full = (hit.get('excerpt') or '').strip()
             if excerpt_full:
-                # Preview (erste Zeilen des aktuellen Excerpts)
+                # Preview und Volltext werden ueber ein einziges QLabel
+                # umgesetzt: der Pfeil steht vor dem Text, beim Umschalten
+                # wird der Textinhalt getauscht.
                 preview_lines = '\n'.join(excerpt_full.splitlines()[:3])
-                preview_label = QLabel(preview_lines, container)
-                preview_label.setStyleSheet('font-size: 10px; color: #555;')
-                preview_label.setWordWrap(True)
-                lay.addWidget(preview_label)
+                preview_text = preview_lines
 
-                # Aufklappbarer Voll-Excerpt
-                toggle_row = QHBoxLayout()
-                toggle_row.setContentsMargins(0, 0, 0, 0)
-                toggle_row.setSpacing(2)
+                excerpt_row = QHBoxLayout()
+                excerpt_row.setContentsMargins(0, 0, 0, 0)
+                excerpt_row.setSpacing(4)
+
                 toggle_btn = QToolButton(container)
                 toggle_btn.setCheckable(True)
                 toggle_btn.setArrowType(Qt.RightArrow)
                 toggle_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
-                toggle_row.addWidget(toggle_btn)
-                desc_label = QLabel('Auszug anzeigen', container)
-                desc_label.setStyleSheet('font-size: 9px; color: #555;')
-                toggle_row.addWidget(desc_label)
-                toggle_row.addStretch(1)
-                lay.addLayout(toggle_row)
+                toggle_btn.setToolTip('Auszug ein- bzw. ausblenden')
+                excerpt_row.addWidget(toggle_btn)
 
-                full_label = QTextEdit(container)
-                full_label.setReadOnly(True)
-                full_label.setPlainText(excerpt_full)
-                full_label.setVisible(False)
-                full_label.setStyleSheet('font-size: 10px; color: #555;')
-                full_label.setMaximumHeight(160)
-                lay.addWidget(full_label)
+                excerpt_label = QLabel(preview_text, container)
+                excerpt_label.setStyleSheet('font-size: 10px; color: #555;')
+                excerpt_label.setWordWrap(True)
+                excerpt_row.addWidget(excerpt_label)
+                excerpt_row.addStretch(1)
+                lay.addLayout(excerpt_row)
 
-                def _toggle_full(checked: bool, widget=full_label, btn=toggle_btn):
-                    widget.setVisible(checked)
+                # Toggle-Handler tauscht nur den Text und die Pfeilrichtung.
+                def _toggle_excerpt(checked: bool, label=excerpt_label, btn=toggle_btn,
+                                    full=excerpt_full, preview=preview_text):
+                    label.setText(full if checked else preview)
                     btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
 
-                toggle_btn.toggled.connect(_toggle_full)
+                toggle_btn.toggled.connect(_toggle_excerpt)
 
             self.sources_layout.addWidget(container)
 
