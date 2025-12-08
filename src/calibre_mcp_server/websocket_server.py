@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 from typing import Any, Dict, Optional
@@ -30,6 +31,7 @@ class MCPWebSocketServer:
         self.config = config
         self._server: Optional[asyncio.AbstractServer] = None
         self._mcp = self._build_fastmcp(config)
+        self._tool_map = self._discover_tools(self._mcp)
 
     def _build_fastmcp(self, cfg: ServerConfig):
         service = LibraryResearchService(calibre_root_path=cfg.calibre_library_path)
@@ -41,6 +43,31 @@ class MCPWebSocketServer:
         register_ft_search_tool(mcp, registry)
         register_excerpt_tool(mcp, registry)
         return mcp
+
+    def _discover_tools(self, mcp):
+        tool_map = {}
+        # FastMCP stores tools in _tool_manager
+        manager = getattr(mcp, '_tool_manager', None)
+        if manager:
+            try:
+                tool_map.update(manager.get_tools())
+            except Exception:  # noqa: BLE001
+                pass
+        if tool_map:
+            return tool_map
+
+        # Fallback: inspect FastMCP instance for callables decorated via @FastMCP.tool
+        for attr_name in dir(mcp):
+            attr = getattr(mcp, attr_name)
+            # FastMCP decorators attach __fastmcp_tool__ metadata on wrapper functions
+            metadata = getattr(attr, '__fastmcp_tool__', None)
+            if metadata:
+                tool_map[metadata.name] = metadata
+            elif callable(attr):
+                # Some versions store tool meta on function attributes
+                if hasattr(attr, 'input_model') and hasattr(attr, 'func'):
+                    tool_map[attr_name] = attr
+        return tool_map
 
     async def _handle_client(self, websocket: WebSocketServerProtocol) -> None:
         async for message in websocket:
@@ -63,7 +90,7 @@ class MCPWebSocketServer:
 
     def _list_tools(self) -> Dict[str, Any]:
         tools = []
-        for name, tool in self._mcp.tools.items():
+        for name, tool in self._tool_map.items():
             schema = tool.input_model.model_json_schema()
             tools.append({
                 "name": name,
@@ -77,7 +104,7 @@ class MCPWebSocketServer:
         arguments = params.get("arguments") or {}
         if not name:
             return make_error_response(request_id, "Missing tool name", code="bad_request")
-        tool = self._mcp.tools.get(name)
+        tool = self._tool_map.get(name)
         if not tool:
             return make_error_response(request_id, f"Unknown tool '{name}'", code="not_found")
         try:
