@@ -42,6 +42,7 @@ prefs.defaults['library_path'] = ''   # Use current calibre library when empty
 prefs.defaults['api_key'] = ''        # Optional AI key (e.g. OpenAI)
 prefs.defaults['models'] = {}
 prefs.defaults['selected_model'] = {}
+prefs.defaults['use_active_library'] = True
 ensure_model_prefs(prefs)
 
 
@@ -75,8 +76,14 @@ class MCPServerRechercheConfigWidget(QWidget):
         self.library_edit.setText(prefs['library_path'])
         self.library_edit.setPlaceholderText(_('z. B. X:/E-Books'))
 
+        self.use_active_checkbox = QCheckBox(_('Aktive Calibre-Bibliothek verwenden'), self)
+        self.use_active_checkbox.setChecked(prefs['use_active_library'])
+        self.use_active_checkbox.stateChanged.connect(self._library_mode_changed)
+        server_form.addRow('', self.use_active_checkbox)
+
         browse_btn = QPushButton(_('Auswahl'), self)
         browse_btn.clicked.connect(self.choose_library)
+        self.browse_btn = browse_btn
 
         lib_row.addWidget(self.library_edit)
         lib_row.addWidget(browse_btn)
@@ -141,6 +148,7 @@ class MCPServerRechercheConfigWidget(QWidget):
 
         self._load_providers()
         self._update_selection_labels()
+        self._update_library_inputs()
 
     def choose_library(self):
         """Select calibre library root directory."""
@@ -152,6 +160,15 @@ class MCPServerRechercheConfigWidget(QWidget):
         if path:
             self.library_edit.setText(path)
 
+    def _library_mode_changed(self, state):
+        prefs['use_active_library'] = bool(state)
+        self._update_library_inputs()
+
+    def _update_library_inputs(self):
+        use_active = self.use_active_checkbox.isChecked()
+        self.library_edit.setEnabled(not use_active)
+        self.browse_btn.setEnabled(not use_active)
+
     def save_settings(self):
         """Persist user changes to JSONConfig."""
         prefs['server_host'] = self.host_edit.text().strip() or '127.0.0.1'
@@ -160,6 +177,7 @@ class MCPServerRechercheConfigWidget(QWidget):
         if library_path:
             library_path = os.path.normpath(library_path)
         prefs['library_path'] = library_path
+        prefs['use_active_library'] = self.use_active_checkbox.isChecked()
         self._persist_provider_settings()
         self._update_selection_labels()
 
@@ -226,3 +244,4 @@ class MCPServerRechercheConfigWidget(QWidget):
             return
         self.selected_provider_label.setText(describe_provider(cfg))
         self.selected_model_label.setText(selected.get('model') or '')
+        self._update_library_inputs()

@@ -12,6 +12,7 @@ if False:
     # You do not need this code in your plugins
     get_icons = get_resources = None
 
+import logging
 import os
 import subprocess
 import sys
@@ -29,6 +30,9 @@ from qt.core import (
 
 from calibre_plugins.mcp_server_recherche.config import prefs
 from calibre_plugins.mcp_server_recherche.provider_client import ChatProviderClient
+
+
+log = logging.getLogger(__name__)
 
 
 class MCPServerRechercheDialog(QDialog):
@@ -146,12 +150,13 @@ class MCPServerRechercheDialog(QDialog):
             port = 8765
 
         library_override = prefs['library_path'].strip()
-        if library_override:
-            library_path = library_override
-            source = 'prefs'
-        else:
+        use_active = prefs.get('use_active_library', True)
+        if use_active or not library_override:
             library_path = self.calibre_library_path
             source = 'current_db'
+        else:
+            library_path = library_override
+            source = 'prefs'
         if not library_path:
             self.chat_view.append('System: Kein Calibre-Bibliothekspfad konfiguriert und kein aktuelle Bibliothek gefunden.')
             return
