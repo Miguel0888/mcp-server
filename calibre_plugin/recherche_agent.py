@@ -164,32 +164,41 @@ class RechercheAgent(object):
     def _plan_search_queries(self, question: str) -> List[str]:
         """Erzeuge Suchabfragen fuer die Volltextsuchen.
 
-        Wenn use_llm_query_planning aktiviert ist, wird zunaechst der LLM
-        benutzt, um Suchphrasen und Schlagwoerter vorzuschlagen. Anschliessend
-        werden daraus boolsche Volltextqueries (z. B. "bus AND fahrzeug AND can")
-        gebaut. Bei Nachfragen fliessen sowohl die letzte als auch die aktuelle
-        Frage in die Schlagwortbasis ein.
+        Wenn use_llm_query_planning aktiviert ist, wird ausschliesslich der LLM
+        fuer die Generierung von Suchphrasen und Schlagwort-Queries genutzt.
+        Dabei werden aktuelle und – falls vorhanden – vorherige Fragen als
+        Kontext uebergeben, so dass der LLM aehnliche Begriffe und sinnvolle
+        Suchmaschinen-Phrasen ableiten kann. Der Agent selbst filtert keine
+        Stopwoerter hart; die Relevanzentscheidung trifft die KI.
         """
         use_llm = bool(self.prefs.get('use_llm_query_planning', True))
         raw_queries: List[str] = []
 
-        # Fuer die Keyword-Extraktion bei Nachfragen sowohl letzte als auch
-        # aktuelle Frage berücksichtigen, damit der Kontext (z. B.
-        # Bussysteme) erhalten bleibt.
-        keyword_basis = question
+        # Kontext fuer den Planner aufbauen: aktuelle + vorherige Frage
+        context_lines: List[str] = []
         if self._last_question:
-            keyword_basis = f"{self._last_question} {question}"
+            context_lines.append("Vorherige Frage im Dialog:")
+            context_lines.append(self._last_question)
+            context_lines.append("")
+
+        context_lines.append("Aktuelle Frage:")
+        context_lines.append(question)
+        context_text = "\n".join(context_lines)
 
         if use_llm:
             planning_prompt = (
-                "Du hilfst dabei, Fragen anhand einer Calibre-Bibliothek zu beantworten.\n"
-                "Analysiere die Frage und schlage bis zu drei kurze, praegende Volltext-Queries vor,\n"
-                "die sich gut fuer eine Volltextsuche in einer technischen Fachbibliothek eignen.\n"
-                "Nutze vor allem zentrale Fachbegriffe, Abkuerzungen und Synonyme (z. B. CAN, LIN,\n"
-                "Local Interconnect Network, Fahrzeugbus, Bordnetz usw.).\n"
-                "Verwende bei Bedarf einfache boolsche Operatoren AND/OR.\n\n"
-                f"Frage:\n{question}\n\n"
-                "Gib nur die Suchabfragen ohne Erklaerungen aus, eine pro Zeile."
+                "Du agierst als Query-Planer fuer eine Volltextsuche in einer technischen Bibliothek.\n"
+                "Deine Aufgabe ist es, aus der Nutzerfrage (und dem vorangegangenen Kontext)\n"
+                "eine kleine Menge von Suchabfragen zu generieren, wie man sie einer Suchmaschine\n"
+                "oder Volltextsuche uebergibt.\n\n"
+                "Rahmenbedingungen:\n"
+                "- Extrahiere und kombiniere nur die wichtigsten Fachbegriffe, Abkuerzungen und Synonyme.\n"
+                "- Du darfst bei Bedarf boolsche Operatoren AND/OR nutzen, aber keine komplexen Ausdruecke.\n"
+                "- Jede Zeile soll eine eigenstaendige Suchanfrage sein (wie bei einer Suchmaschine).\n"
+                "- Vermeide Hoeflichkeitsfloskeln und Funktionsverben (z. B. 'erkläre', 'sag mir', 'bitte').\n"
+                "- Nutze gegebenenfalls auch anderssprachige Fachbegriffe, wenn diese ueblich sind.\n\n"
+                f"KONTEXT:\n{context_text}\n\n"
+                "Gib bis zu drei Suchabfragen aus, jeweils eine pro Zeile, ohne weitere Erklaerungen."
             )
 
             try:
@@ -199,90 +208,28 @@ class RechercheAgent(object):
                 log.warning("LLM-Query-Planung fehlgeschlagen: %s", exc)
                 raw_queries = []
 
-        # Immer sicherstellen, dass die Originalfrage als Basis vorhanden ist
+        # Fallback: wenn der LLM nichts geliefert hat, benutze die Frage direkt
         if not raw_queries:
             raw_queries = [question]
-        elif question not in raw_queries:
-            raw_queries.insert(0, question)
 
+        raw_queries = [q.strip() for q in raw_queries if q.strip()]
         raw_queries = raw_queries[: self.max_query_variants]
 
-        # Nun Schlagwoerter extrahieren und in boolsche Volltextqueries
-        keyword_queries: List[str] = []
-
-        # 1) Zentrale Keyword-basierte Query aus kombinierter Basis
-        kws = self._extract_keywords(keyword_basis)
-        if kws:
-            combined_query = self._keywords_to_query(kws)
-            keyword_queries.append(combined_query)
-
-        # 2) LLM-Vorschlaege direkt als Queries mitverwenden (bereits in
-        # boolscher FT-Sprache formuliert), sofern sinnvoll
-        for q in raw_queries:
-            q_clean = q.strip()
-            if not q_clean:
-                continue
-            if q_clean not in keyword_queries:
-                keyword_queries.append(q_clean)
-
-        # Fallback: wenn keine Keywords erkannt wurden, nehme nur Roh-Queries
-        if not keyword_queries:
-            keyword_queries = raw_queries
-
-        log.info("Geplante Volltext-Queries: %r", keyword_queries)
-        self._trace_log(f"Geplante Volltext-Queries: {keyword_queries!r}")
-        return keyword_queries
+        log.info("Geplante Volltext-Queries: %r", raw_queries)
+        self._trace_log(f"Geplante Volltext-Queries: {raw_queries!r}")
+        return raw_queries
 
     def _extract_keywords(self, text: str) -> List[str]:
-        """Einfache Schlagwort-Extraktion fuer Volltextsuchen.
+        """Legacy-Hilfsfunktion (derzeit nicht aktiv genutzt).
 
-        - Kleinbuchstaben
-        - nicht alphanumerische Zeichen zu Leerzeichen
-        - Stoppworte entfernen
-        - Laengenfilter (>= 3 Zeichen)
-        - Limit aus prefs (max_search_keywords)
+        Die eigentliche Entscheidung, welche Begriffe relevant sind, trifft
+        der LLM in der Query-Planung. Diese Methode bleibt fuer spaetere,
+        optional heuristische Pfade erhalten, wird aber im Standardpfad
+        nicht verwendet.
         """
         if not text:
             return []
-
-        max_kws = int(self.prefs.get('max_search_keywords', 5))
-        cleaned = re.sub(r"[^\wäöüÄÖÜß]+", " ", text.lower())
-        tokens = [t.strip() for t in cleaned.split() if t.strip()]
-
-        # sehr einfache deutsche/englische Stoppwortliste
-        stopwords = {
-            'und', 'oder', 'der', 'die', 'das', 'ein', 'eine', 'einer', 'eines',
-            'ist', 'sind', 'was', 'wie', 'warum', 'welche', 'welcher', 'welches',
-            'gibt', 'es', 'zu', 'im', 'in', 'am', 'an', 'den', 'dem', 'des',
-            'the', 'a', 'an', 'of', 'for', 'to', 'on', 'in', 'and', 'or',
-            # haeufige dialogphrasen, die keine Suchbegriffe sind
-            'sag', 'sage', 'mehr', 'mir', 'bitte', 'genau', 'erzaehl', 'erzaehle',
-        }
-
-        keywords: List[str] = []
-        for tok in tokens:
-            if len(tok) < 3:
-                continue
-            if tok in stopwords:
-                continue
-            if tok not in keywords:
-                keywords.append(tok)
-            if len(keywords) >= max_kws:
-                break
-
-        return keywords
-
-    def _keywords_to_query(self, keywords: List[str]) -> str:
-        """Baue eine boolsche Volltextquery aus Schlagwoertern.
-
-        Beispiel: ['fahrzeug', 'bus', 'can'] + AND -> "fahrzeug AND bus AND can"
-        """
-        if not keywords:
-            return ""
-        op = str(self.prefs.get('keyword_boolean_operator', 'AND')).upper()
-        if op not in ('AND', 'OR'):
-            op = 'AND'
-        return f" {op} ".join(keywords)
+        return []
 
     # ------------------ Search plan execution ------------------
 
