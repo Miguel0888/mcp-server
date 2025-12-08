@@ -20,6 +20,7 @@ from qt.core import (
     QComboBox,
     QCheckBox,
 )
+import os
 
 from .providers import (
     ensure_model_prefs,
