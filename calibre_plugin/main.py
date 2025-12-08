@@ -57,8 +57,11 @@ class ChatMessageWidget(QFrame):
 
         self.setFrameShape(QFrame.StyledPanel)
         self.setFrameShadow(QFrame.Raised)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(4)
 
         # Kopfzeile mit Rollen-Label
         header = QHBoxLayout()
@@ -71,6 +74,9 @@ class ChatMessageWidget(QFrame):
         # Inhalt als QTextBrowser (unterstuetzt einfache Markdown/HTML)
         self.text_browser = QTextBrowser(self)
         self.text_browser.setOpenExternalLinks(True)
+        # Fuer kurze User-Fragen nicht unnötig viel Hoehe reservieren
+        self.text_browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.text_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         # Wenn verfuegbar, einfachen Markdown anzeigen, sonst HTML-Fallback
         try:
             # Qt6: QTextBrowser.setMarkdown; kann in aelteren Umgebungen fehlen
@@ -89,6 +95,8 @@ class ChatMessageWidget(QFrame):
         self.trace_title_label = None
         if tool_trace is not None:
             toggle_row = QHBoxLayout()
+            toggle_row.setContentsMargins(0, 0, 0, 0)
+            toggle_row.setSpacing(2)
             self.toggle_button = QToolButton(self)
             self.toggle_button.setCheckable(True)
             self.toggle_button.setArrowType(Qt.RightArrow)
@@ -108,6 +116,8 @@ class ChatMessageWidget(QFrame):
             self.trace_widget.setPlainText(tool_trace)
             self.trace_widget.setVisible(False)
             self.trace_widget.setStyleSheet('font-size: 10px; color: #555;')
+            self.trace_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
+            self.trace_widget.setFixedHeight(120)
             layout.addWidget(self.trace_widget)
 
     def update_trace(self, title: str | None, content: str):
@@ -174,12 +184,13 @@ class ChatPanel(QWidget):
 
         self.scroll = QScrollArea(self)
         self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         layout.addWidget(self.scroll)
 
         container = QWidget(self.scroll)
         self.messages_layout = QVBoxLayout(container)
         self.messages_layout.setContentsMargins(4, 4, 4, 4)
-        self.messages_layout.setSpacing(6)
+        self.messages_layout.setSpacing(8)
         self.messages_layout.addStretch(1)
 
         self.scroll.setWidget(container)
