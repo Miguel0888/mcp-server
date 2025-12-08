@@ -287,6 +287,7 @@ class MCPServerRechercheDialog(QDialog):
         log.info("Detected Calibre library path: %s", self.calibre_library_path)
 
         # Agent nach Aufbau der UI initialisieren, damit Trace ins Chatfenster gehen kann
+        self._trace_buffer: list[str] = []
         self.agent = RechercheAgent(prefs, trace_callback=self._append_trace)
 
     # ------------------------------------------------------------------ UI
@@ -477,7 +478,7 @@ class MCPServerRechercheDialog(QDialog):
     def new_chat(self):
         """Loesche aktuellen Chatverlauf und setze Agent-Session zurueck."""
         self.chat_panel.clear()
-        # Agent besitzt Session-Zustand (z. B. letzte Frage/ Treffer); durch Neuinstanzierung zuruecksetzen
+        self._trace_buffer = []
         self.agent = RechercheAgent(prefs, trace_callback=self._append_trace)
         self.chat_panel.add_system_message('Neuer Chat gestartet.')
 
@@ -498,26 +499,33 @@ class MCPServerRechercheDialog(QDialog):
     def _process_chat(self, text: str):
         try:
             self.chat_panel.add_system_message('Starte Recherche uebers MCP-Backend ...')
-
+            self._trace_buffer = []
             response = self.agent.answer_question(text)
         except Exception as exc:
             log.exception("Research agent failed")
             self.chat_panel.add_system_message(f'Fehler in der Recherche-Pipeline: {exc}')
         else:
             if response:
-                self.chat_panel.add_ai_message(response)
+                # Gesammelte Traces zu einem Block zusammenfassen
+                tool_trace = None
+                if self.debug_checkbox.isChecked() and self._trace_buffer:
+                    tool_trace = "\n".join(self._trace_buffer)
+                self.chat_panel.add_ai_message(response, tool_trace=tool_trace)
             else:
                 self.chat_panel.add_system_message('Keine Antwort vom Provider erhalten.')
         finally:
             self._toggle_send_state(False)
 
     def _append_trace(self, message: str):
-        """Trace-Callback fuer den Agenten: Debug-Ausgaben ins Chatpanel schreiben.
+        """Trace-Callback fuer den Agenten.
 
-        Aktuell werden die Traces als separate Debug-Nachrichten angezeigt.
-        In einem spaeteren Schritt koennen wir diese Nachrichten pro AI-Antwort
-        sammeln und als aufklappbare Tool-Details an add_ai_message() uebergeben.
+        Statt jede Trace-Zeile sofort anzuzeigen, werden sie im aktuellen
+        Chat-Durchlauf gesammelt und als aufklappbare Tool-Details an die
+        naechste AI-Antwort angehaengt (sofern Debug aktiviert ist).
         """
+        # Immer puffern, damit wir die Infos fuer die naechste Antwort haben
+        self._trace_buffer.append(message)
+        # Optional zusaetzlich inline als Debug-Nachricht anzeigen
         if self.debug_checkbox.isChecked():
             self.chat_panel.add_debug_message(message)
 
