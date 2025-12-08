@@ -1,3 +1,11 @@
+import sys
+from pathlib import Path
+
+PLUGIN_DIR = Path(__file__).resolve().parent
+SITE_PACKAGES = PLUGIN_DIR / 'site-packages'
+if SITE_PACKAGES.exists():
+    sys.path.insert(0, str(SITE_PACKAGES))
+
 import asyncio
 import threading
 from typing import Optional

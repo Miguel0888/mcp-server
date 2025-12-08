@@ -11,16 +11,27 @@ from calibre.customize import InterfaceActionBase
 
 import sys
 from pathlib import Path
+import importlib.util
+import zipfile
 
 PLUGIN_DIR = Path(__file__).resolve().parent
-SRC_DIR = PLUGIN_DIR.parent / 'src'
+ZIP_PATH = PLUGIN_DIR.parent.with_suffix('.zip')
+if ZIP_PATH.exists():
+    sys.path.insert(0, str(ZIP_PATH))
+
 MODULE_PATHS = [PLUGIN_DIR]
+SRC_DIR = PLUGIN_DIR.parent / 'src'
 if SRC_DIR.exists():
     MODULE_PATHS.append(SRC_DIR)
 for path in MODULE_PATHS:
     str_path = str(path)
     if str_path not in sys.path:
         sys.path.insert(0, str_path)
+
+# ensure third-party dependencies bundled alongside plugin are importable
+site_packages_dir = PLUGIN_DIR / 'site-packages'
+if site_packages_dir.exists():
+    sys.path.insert(0, str(site_packages_dir))
 
 
 class MCPServerRecherchePlugin(InterfaceActionBase):
