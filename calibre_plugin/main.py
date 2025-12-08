@@ -686,8 +686,9 @@ class MCPServerRechercheDialog(QDialog):
                 if self._trace_buffer:
                     content = "\n".join(self._trace_buffer)
                     # Nach erfolgreichem Abschluss klaren End-Status
-                    # neben dem Pfeil anzeigen, statt dem letzten Trace.
-                    final_title = "FERTIG"
+                    # neben dem Pfeil anzeigen (Unicode-Haken), damit
+                    # keine sprachabhaengigen Texte noetig sind.
+                    final_title = "✓"
                     self._current_ai_message.update_trace(final_title, content)
             else:
                 tool_trace = "\n".join(self._trace_buffer) if self._trace_buffer else None
@@ -698,13 +699,13 @@ class MCPServerRechercheDialog(QDialog):
 
     def _on_agent_failed(self, error_text: str) -> None:
         """Agent hat mit Fehler abgebrochen (UI-Thread)."""
-        # Fehlermeldung sowohl in der Statusleiste als auch im Debug-Titel
-        # sichtbar machen.
+        # Fehlermeldung sowohl in der Statusleiste als auch über ein
+        # Unicode-Fehler-Symbol im Debug-Titel sichtbar machen.
         self._enqueue_status(f'Fehler in der Recherche-Pipeline: {error_text}')
         if self._current_ai_message is not None:
             content = "\n".join(self._trace_buffer)
-            # Kurzen Status-Titel mit Hinweis auf den Fehler setzen.
-            final_title = f'FEHLER: {error_text}'
+            # Kurzer, sprachneutraler Fehler-Indikator
+            final_title = "⚠"
             self._current_ai_message.update_trace(final_title, content)
         self._toggle_send_state(False)
 
