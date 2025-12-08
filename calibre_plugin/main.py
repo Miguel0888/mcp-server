@@ -637,6 +637,16 @@ class MCPServerRechercheDialog(QDialog):
         if not text:
             return
 
+        # Falls der MCP-Server noch nicht laeuft, automatisch starten.
+        # Damit bleibt das Verhalten konsistent mit dem Start-Button,
+        # inklusive Statusmeldungen und Button-Text.
+        if not self.server_running:
+            self._start_server()
+            # Wenn der Start fehlgeschlagen ist (server_running weiterhin False),
+            # brechen wir hier ab, statt eine Anfrage ins Leere zu schicken.
+            if not self.server_running:
+                return
+
         self.chat_panel.add_user_message(text)
         self.input_edit.clear()
         self._toggle_send_state(True)
