@@ -326,26 +326,75 @@ class MCPServerRechercheDialog(QDialog):
         self.send_button.setText('Senden...' if busy else 'Senden')
 
     def _python_executable(self) -> str:
-        override = (prefs.get('python_executable') or '').strip()
-        if override:
-            log.info("Using Python from prefs: %s", override)
-            return override
+        """Resolve Python interpreter based on prefs and auto-detect flag."""
+        auto = prefs.get('auto_detect_python', True)
+        configured = (prefs.get('python_executable') or '').strip()
 
-        python_cmd = sys.executable
-        basename = os.path.basename(python_cmd).lower()
-        # Avoid calibre launchers, try to find real python on PATH
-        if basename.startswith('calibre-') or basename == 'pythonw.exe':
-            preferred = shutil.which('python') or shutil.which('python3')
-            if preferred:
-                python_cmd = preferred
-
-        if not python_cmd or not os.path.exists(python_cmd):
-            raise RuntimeError(
-                'Python-Interpreter nicht gefunden. Bitte in den Einstellungen einen gueltigen Pfad setzen.'
+        def is_calibre_executable(path):
+            """Return True if executable is very likely a calibre launcher."""
+            if not path:
+                return False
+            name = os.path.basename(path).lower()
+            return (
+                name.startswith('calibre-')
+                or name == 'calibre.exe'
+                or name == 'calibre-debug.exe'
+                or name == 'calibre-parallel.exe'
             )
 
-        return python_cmd
+        def collect_candidates():
+            """Collect possible Python executables in order of preference."""
+            candidates = []
 
+            # 1) Configured path (only as hint in auto-mode)
+            if configured:
+                candidates.append(configured)
+
+            # 2) python / python3 from PATH
+            candidates.append(shutil.which('python'))
+            candidates.append(shutil.which('python3'))
+
+            # 3) sys.executable if it is not a calibre wrapper
+            if sys.executable and not is_calibre_executable(sys.executable):
+                candidates.append(sys.executable)
+
+            # Deduplicate and filter invalid
+            seen = set()
+            result = []
+            for c in candidates:
+                if not c:
+                    continue
+                if c in seen:
+                    continue
+                seen.add(c)
+                if not os.path.exists(c):
+                    continue
+                if is_calibre_executable(c):
+                    continue
+                result.append(c)
+            return result
+
+        # --- Manueller Modus: Checkbox aus ---------------------------------
+        if not auto:
+            if configured and os.path.exists(configured) and not is_calibre_executable(configured):
+                log.info("Use configured Python executable (manual mode): %s", configured)
+                return configured
+            raise RuntimeError(
+                "Python-Interpreter ist nicht gueltig konfiguriert. "
+                "Entweder einen Pfad setzen oder 'Python automatisch ermitteln' aktivieren."
+            )
+
+        # --- Auto-Modus: Checkbox an ---------------------------------------
+        candidates = collect_candidates()
+        if not candidates:
+            raise RuntimeError(
+                "Kein geeigneter Python-Interpreter gefunden. "
+                "Bitte sicherstellen, dass python/python3 im PATH ist oder einen Pfad konfigurieren."
+            )
+
+        chosen = candidates[0]
+        log.info("Auto-detected Python executable: %s", chosen)
+        return chosen
 
 def create_dialog(gui, icon, do_user_config):
     d = MCPServerRechercheDialog(gui, icon, do_user_config)
