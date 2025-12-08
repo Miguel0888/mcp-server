@@ -10,9 +10,6 @@ import asyncio
 import threading
 from typing import Optional
 
-from calibre_mcp_server.config_loader import ServerConfig
-from calibre_mcp_server.websocket_server import MCPWebSocketServer
-
 
 class MCPServerThread(threading.Thread):
     def __init__(self, host: str, port: int, library_path: str):
@@ -21,7 +18,7 @@ class MCPServerThread(threading.Thread):
         self.port = port
         self.library_path = library_path
         self.loop: Optional[asyncio.AbstractEventLoop] = None
-        self.server: Optional[MCPWebSocketServer] = None
+        self.server = None
         self.started_event = threading.Event()
         self._shutdown_event: Optional[asyncio.Event] = None
         self._is_running = False
@@ -32,6 +29,22 @@ class MCPServerThread(threading.Thread):
         return self._is_running
 
     def run(self) -> None:
+        try:
+            from calibre_mcp_server.config_loader import ServerConfig
+            from calibre_mcp_server.websocket_server import MCPWebSocketServer
+        except ModuleNotFoundError as exc:  # pylint: disable=broad-except
+            missing = exc.name or 'unbekannt'
+            self.last_error = (
+                f"Abhaengigkeit '{missing}' fehlt. Bitte websockets/fastmcp in das Plugin "
+                "bundle oder in Calibre installieren."
+            )
+            self.started_event.set()
+            return
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)
+            self.started_event.set()
+            return
+
         try:
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
