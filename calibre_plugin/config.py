@@ -56,6 +56,11 @@ prefs.defaults['max_excerpt_chars'] = 1200
 prefs.defaults['context_hit_limit'] = 8
 prefs.defaults['request_timeout'] = 15
 
+# Schlagwort-/Keyword-Suche
+prefs.defaults['use_llm_query_planning'] = True
+prefs.defaults['max_search_keywords'] = 5
+prefs.defaults['keyword_boolean_operator'] = 'AND'  # AND oder OR
+
 ensure_model_prefs(prefs)
 
 
@@ -216,6 +221,25 @@ class MCPServerRechercheConfigWidget(QWidget):
         self._update_library_inputs()
         self._update_python_inputs()
 
+        # Suchmodus ---------------------------------------------------------
+        search_group = QGroupBox(_('Suchmodus'), self)
+        search_form = QFormLayout(search_group)
+        search_group.setLayout(search_form)
+        layout.addWidget(search_group)
+
+        self.use_llm_planning_checkbox = QCheckBox(_('LLM fuer Query-Planung verwenden'), self)
+        self.use_llm_planning_checkbox.setChecked(prefs.get('use_llm_query_planning', True))
+        search_form.addRow('', self.use_llm_planning_checkbox)
+
+        self.max_keywords_edit = QLineEdit(self)
+        self.max_keywords_edit.setText(str(prefs.get('max_search_keywords', 5)))
+        search_form.addRow(_('Max. Schlagwoerter pro Suche:'), self.max_keywords_edit)
+
+        self.bool_operator_edit = QLineEdit(self)
+        self.bool_operator_edit.setText(prefs.get('keyword_boolean_operator', 'AND'))
+        self.bool_operator_edit.setPlaceholderText(_('AND oder OR'))
+        search_form.addRow(_('Verknuepfung (AND/OR):'), self.bool_operator_edit)
+
     def choose_library(self):
         """Select calibre library root directory."""
         path = QFileDialog.getExistingDirectory(
@@ -288,6 +312,14 @@ class MCPServerRechercheConfigWidget(QWidget):
         prefs['max_excerpt_chars'] = _read_int(self.max_excerpt_chars_edit, 1200)
         prefs['context_hit_limit'] = _read_int(self.context_hit_limit_edit, 8)
         prefs['request_timeout'] = _read_int(self.request_timeout_edit, 15)
+
+        # Suchmodus
+        prefs['use_llm_query_planning'] = self.use_llm_planning_checkbox.isChecked()
+        prefs['max_search_keywords'] = _read_int(self.max_keywords_edit, 5)
+        op = (self.bool_operator_edit.text().strip() or 'AND').upper()
+        if op not in ('AND', 'OR'):
+            op = 'AND'
+        prefs['keyword_boolean_operator'] = op
 
         self._persist_provider_settings()
         self._update_selection_labels()

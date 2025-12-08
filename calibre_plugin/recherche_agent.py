@@ -130,37 +130,105 @@ class RechercheAgent(object):
     # ------------------ Planning helpers ------------------
 
     def _plan_search_queries(self, question: str) -> List[str]:
-        """Ask the LLM to suggest targeted search queries."""
-        planning_prompt = (
-            "Du hilfst dabei, Fragen anhand einer Calibre-Bibliothek zu beantworten.\n"
-            "Formuliere bis zu drei kurze Suchabfragen (eine pro Zeile).\n"
-            "Die erste Abfrage soll der Originalfrage entsprechen, die folgenden beleuchten andere Aspekte.\n\n"
-            f"Frage:\n{question}\n\n"
-            "Gib nur die Suchabfragen ohne Erklaerungen aus."
-        )
+        """Erzeuge Suchabfragen fuer die Volltextsuchen.
 
-        try:
-            response = self.chat_client.send_chat(planning_prompt)
-            queries = self._extract_queries(response)
-        except Exception as exc:  # noqa: BLE001 - fallback to base question
-            log.warning("LLM-Query-Planung fehlgeschlagen: %s", exc)
-            queries = []
+        Wenn use_llm_query_planning aktiviert ist, wird zunaechst der LLM
+        benutzt, um Suchphrasen vorzuschlagen. Anschliessend werden aus der
+        Frage (und optional den LLM-Vorschlaegen) Schlagwoerter extrahiert
+        und in boolsche Volltextqueries (z. B. "bus AND fahrzeug AND can")
+        umgewandelt.
+        """
+        use_llm = bool(self.prefs.get('use_llm_query_planning', True))
+        raw_queries: List[str] = []
 
-        if not queries:
-            queries = [question]
-        elif question not in queries:
-            queries.insert(0, question)
+        if use_llm:
+            planning_prompt = (
+                "Du hilfst dabei, Fragen anhand einer Calibre-Bibliothek zu beantworten.\n"
+                "Formuliere bis zu drei kurze Suchabfragen fuer eine Volltextsuche, eine pro Zeile.\n"
+                "Nutze dabei vor allem zentrale Fachbegriffe und Titelwoerter, keine ganzen Saetze.\n\n"
+                f"Frage:\n{question}\n\n"
+                "Gib nur die Suchabfragen ohne Erklaerungen aus."
+            )
 
-        return queries[: self.max_query_variants]
+            try:
+                response = self.chat_client.send_chat(planning_prompt)
+                raw_queries = self._extract_queries(response)
+            except Exception as exc:  # noqa: BLE001 - fallback to heuristische Suche
+                log.warning("LLM-Query-Planung fehlgeschlagen: %s", exc)
+                raw_queries = []
 
-    @staticmethod
-    def _extract_queries(raw_response: str) -> List[str]:
-        queries: List[str] = []
-        for line in raw_response.splitlines():
-            cleaned = re.sub(r"^[\-•\d)\s]+", "", line.strip())
-            if cleaned and cleaned not in queries:
-                queries.append(cleaned)
-        return queries
+        # Immer sicherstellen, dass die Originalfrage als Basis vorhanden ist
+        if not raw_queries:
+            raw_queries = [question]
+        elif question not in raw_queries:
+            raw_queries.insert(0, question)
+
+        raw_queries = raw_queries[: self.max_query_variants]
+
+        # Nun Schlagwoerter extrahieren und in boolsche Volltextqueries
+        keyword_queries: List[str] = []
+        for q in raw_queries:
+            kws = self._extract_keywords(q)
+            if not kws:
+                continue
+            keyword_queries.append(self._keywords_to_query(kws))
+
+        # Fallback: wenn keine Keywords erkannt wurden, nehme Roh-Queries
+        if not keyword_queries:
+            keyword_queries = raw_queries
+
+        log.info("Geplante Volltext-Queries: %r", keyword_queries)
+        self._trace_log(f"Geplante Volltext-Queries: {keyword_queries!r}")
+        return keyword_queries
+
+    def _extract_keywords(self, text: str) -> List[str]:
+        """Einfache Schlagwort-Extraktion fuer Volltextsuchen.
+
+        - Kleinbuchstaben
+        - nicht alphanumerische Zeichen zu Leerzeichen
+        - Stoppworte entfernen
+        - Laengenfilter (>= 3 Zeichen)
+        - Limit aus prefs (max_search_keywords)
+        """
+        if not text:
+            return []
+
+        max_kws = int(self.prefs.get('max_search_keywords', 5))
+        cleaned = re.sub(r"[^\wäöüÄÖÜß]+", " ", text.lower())
+        tokens = [t.strip() for t in cleaned.split() if t.strip()]
+
+        # sehr einfache deutsche/englische Stoppwortliste
+        stopwords = {
+            'und', 'oder', 'der', 'die', 'das', 'ein', 'eine', 'einer', 'eines',
+            'ist', 'sind', 'was', 'wie', 'warum', 'welche', 'welcher', 'welches',
+            'gibt', 'es', 'zu', 'im', 'in', 'am', 'an', 'den', 'dem', 'des',
+            'the', 'a', 'an', 'of', 'for', 'to', 'on', 'in', 'and', 'or',
+        }
+
+        keywords: List[str] = []
+        for tok in tokens:
+            if len(tok) < 3:
+                continue
+            if tok in stopwords:
+                continue
+            if tok not in keywords:
+                keywords.append(tok)
+            if len(keywords) >= max_kws:
+                break
+
+        return keywords
+
+    def _keywords_to_query(self, keywords: List[str]) -> str:
+        """Baue eine boolsche Volltextquery aus Schlagwoertern.
+
+        Beispiel: ['fahrzeug', 'bus', 'can'] + AND -> "fahrzeug AND bus AND can"
+        """
+        if not keywords:
+            return ""
+        op = str(self.prefs.get('keyword_boolean_operator', 'AND')).upper()
+        if op not in ('AND', 'OR'):
+            op = 'AND'
+        return f" {op} ".join(keywords)
 
     # ------------------ Search plan execution ------------------
 
