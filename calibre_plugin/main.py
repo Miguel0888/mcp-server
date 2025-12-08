@@ -325,12 +325,17 @@ class MCPServerRechercheDialog(QDialog):
 
     def _process_chat(self, text: str):
         try:
+            # Zwischenstatus: Recherche startet
+            self.chat_view.append('System: Starte Recherche uebers MCP-Backend ...')
+
             response = self.agent.answer_question(text)
         except Exception as exc:
             log.exception("Research agent failed")
             self.chat_view.append(f'System: Fehler in der Recherche-Pipeline: {exc}')
         else:
             if response:
+                # Vor der AI-Antwort noch einen Trennstrich, falls viele DEBUG-Zeilen dazwischen liegen
+                self.chat_view.append('---')
                 self.chat_view.append(f'AI: {response}')
             else:
                 self.chat_view.append('System: Keine Antwort vom Provider erhalten.')

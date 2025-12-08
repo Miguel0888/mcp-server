@@ -156,20 +156,25 @@ class MetadataRepository(object):
             cur.execute(sql, params)
             rows = cur.fetchall()
 
-        for row in rows:
-            comments = row["comments"] or ""
-            snippet = self._build_snippet(comments, raw)
-            if not snippet:
-                snippet = row["title"] or ""
+            for row in rows:
+                comments = row["comments"] or ""
+                snippet = self._build_snippet(comments, raw)
+                if not snippet:
+                    snippet = row["title"] or ""
 
-            hits.append(
-                FulltextHit(
-                    book_id=row["book_id"],
-                    title=row["title"],
-                    isbn=row["isbn"],
-                    snippet=snippet,
+                # ISBN bevorzugt aus identifiers/normalisiert nachladen
+                isbn = row["isbn"]
+                if not isbn:
+                    isbn = self._lookup_isbn_for_book(conn, row["book_id"]) or None
+
+                hits.append(
+                    FulltextHit(
+                        book_id=row["book_id"],
+                        title=row["title"],
+                        isbn=isbn,
+                        snippet=snippet,
+                    )
                 )
-            )
 
         return hits
 
@@ -266,3 +271,33 @@ class MetadataRepository(object):
         start = max(idx - window // 2, 0)
         end = start + window
         return cleaned[start:end]
+
+    def _lookup_isbn_for_book(self, conn: sqlite3.Connection, book_id: int) -> Optional[str]:
+        """Versuche, eine "beste" ISBN fuer ein Buch zu ermitteln.
+
+        Reihenfolge:
+        1) identifiers (isbn / isbn13), bereinigt von '-', ' '
+        2) books.isbn, bereinigt
+        """
+        cur = conn.cursor()
+        # 1) identifiers
+        sql_ident = """
+            SELECT i.val
+            FROM identifiers i
+            WHERE i.book = ? AND lower(i.type) IN ('isbn', 'isbn13')
+            LIMIT 1
+        """
+        cur.execute(sql_ident, (book_id,))
+        row = cur.fetchone()
+        if row and row[0]:
+            val = str(row[0])
+            return val.strip()
+
+        # 2) books.isbn
+        sql_book = "SELECT isbn FROM books WHERE id = ? LIMIT 1"
+        cur.execute(sql_book, (book_id,))
+        row = cur.fetchone()
+        if row and row[0]:
+            return str(row[0]).strip()
+        return None
+
