@@ -42,6 +42,7 @@ from qt.core import (
     QObject,
     pyqtSignal,
     QFileDialog,
+    QPixmap,
 )
 
 from calibre_plugins.mcp_server_recherche.config import prefs
@@ -983,9 +984,14 @@ class MCPServerRechercheDialog(QDialog):
         # analog zum Stern vor dem Titel.
         for hit in self._source_hits:
             container = QWidget(self.sources_panel)
-            lay = QVBoxLayout(container)
+            lay = QHBoxLayout(container)
             lay.setContentsMargins(4, 4, 4, 4)
-            lay.setSpacing(2)
+            lay.setSpacing(6)
+
+            # Linke Spalte: Text (Titel, ISBN, Auszug)
+            text_col = QVBoxLayout()
+            text_col.setContentsMargins(0, 0, 0, 0)
+            text_col.setSpacing(2)
 
             title = hit.get('title') or 'Unbekannter Titel'
             isbn = hit.get('isbn') or ''
@@ -1008,13 +1014,10 @@ class MCPServerRechercheDialog(QDialog):
             if isbn:
                 header_row.addWidget(QLabel(f"ISBN: {isbn}", container))
             header_row.addStretch(1)
-            lay.addLayout(header_row)
+            text_col.addLayout(header_row)
 
             excerpt_full = (hit.get('excerpt') or '').strip()
             if excerpt_full:
-                # Preview und Volltext werden ueber ein einziges QLabel
-                # umgesetzt: der Pfeil steht vor dem Text, beim Umschalten
-                # wird der Textinhalt getauscht.
                 preview_lines = '\n'.join(excerpt_full.splitlines()[:3])
                 preview_text = preview_lines
 
@@ -1034,15 +1037,34 @@ class MCPServerRechercheDialog(QDialog):
                 excerpt_label.setWordWrap(True)
                 excerpt_row.addWidget(excerpt_label)
                 excerpt_row.addStretch(1)
-                lay.addLayout(excerpt_row)
+                text_col.addLayout(excerpt_row)
 
-                # Toggle-Handler tauscht nur den Text und die Pfeilrichtung.
                 def _toggle_excerpt(checked: bool, label=excerpt_label, btn=toggle_btn,
                                     full=excerpt_full, preview=preview_text):
                     label.setText(full if checked else preview)
                     btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
 
                 toggle_btn.toggled.connect(_toggle_excerpt)
+
+            lay.addLayout(text_col, 3)
+
+            # Rechte Spalte: kleines Cover aus der Calibre-DB, falls vorhanden
+            cover_label = QLabel(container)
+            cover_label.setAlignment(Qt.AlignCenter)
+            cover_label.setMinimumSize(64, 96)
+            cover_label.setMaximumSize(96, 144)
+            if book_id is not None:
+                try:
+                    # new_api.get_cover() liefert den Pfad zur Cover-Datei oder None
+                    cover_path = getattr(self.db, 'new_api', self.db).cover(book_id)
+                    if cover_path:
+                        pix = QPixmap(cover_path)
+                        if not pix.isNull():
+                            scaled = pix.scaled(96, 144, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                            cover_label.setPixmap(scaled)
+                except Exception:
+                    log.exception('Konnte Cover fuer book_id=%r nicht laden', book_id)
+            lay.addWidget(cover_label, 0, Qt.AlignRight | Qt.AlignTop)
 
             self.sources_layout.addWidget(container)
 
