@@ -95,22 +95,12 @@ class ChatMessageWidget(QFrame):
         header.addStretch(1)
         layout.addLayout(header)
 
-        # Inhalt als QTextBrowser (unterstuetzt einfache Markdown/HTML)
-        self.text_browser = QTextBrowser(self)
-        self.text_browser.setOpenExternalLinks(True)
-        self.text_browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        self.text_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.text_browser.setFrameStyle(QFrame.NoFrame)
-        layout.addWidget(self.text_browser)
-        # Initialen Text setzen (kann leer sein und spaeter gefuellt werden)
-        self.set_message_text(text)
-
         # Optionaler aufklappbarer Tool-Trace mit Pfeilsymbol und dynamischem Titel
         self.trace_widget = None
         self.trace_title_label = None
-        # Wir erzeugen immer einen Trace-Bereich fuer AI-Nachrichten, damit
-        # der aktuelle Step von Beginn an sichtbar sein kann. Fuer andere
-        # Rollen nur, wenn explizit tool_trace uebergeben wurde.
+        self.toggle_button = None
+        # Debug-Pfeil direkt UNTER der Kopfzeile, also VOR der eigentlichen AI-Antwort,
+        # damit er schon waehrend der Tool-Ausfuehrung sinnvoll wirkt.
         if self.role == 'ai' or tool_trace is not None:
             toggle_row = QHBoxLayout()
             toggle_row.setContentsMargins(0, 0, 0, 0)
@@ -137,6 +127,21 @@ class ChatMessageWidget(QFrame):
             self.trace_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
             layout.addWidget(self.trace_widget)
 
+        # Inhalt als QTextBrowser (unterstuetzt einfache Markdown/HTML)
+        self.text_browser = QTextBrowser(self)
+        self.text_browser.setOpenExternalLinks(True)
+        self.text_browser.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        # Scrollbar EXPLIZIT beibehalten, damit lange Antworten scrollbar sind
+        # und nicht das gesamte Chatlayout sprengen.
+        # Wir koppeln nur Min/Max-Hoehe an den Inhalt, damit kurze Nachrichten
+        # nicht unnoetig viel Platz einnehmen.
+        # Horizontal weiterhin ohne Scrollbar.
+        self.text_browser.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.text_browser.setFrameStyle(QFrame.NoFrame)
+        layout.addWidget(self.text_browser)
+        # Initialen Text setzen (kann leer sein und spaeter gefuellt werden)
+        self.set_message_text(text)
+
     def set_message_text(self, text: str) -> None:
         """Antworttext setzen und Groesse an Inhalt anpassen.
 
@@ -153,16 +158,19 @@ class ChatMessageWidget(QFrame):
         else:
             self.text_browser.setHtml(self._to_html(text))
 
-        # Dokumentgroesse an Inhalt anpassen und daraus eine sinnvolle
-        # Widgethoehe ableiten, damit die Box wirklich nur so gross ist
-        # wie ihr Inhalt.
+        # Dokumentgroesse an Inhalt anpassen und daraus eine Widgethoehe ableiten,
+        # damit die Box nur so gross ist wie ihr Inhalt. Wir setzen sowohl
+        # Minimum- als auch Maximalhoehe, damit jede Nachricht eine eigene,
+        # inhaltsabhaengige Hoehe erhaelt.
         doc = self.text_browser.document()
         doc.adjustSize()
         doc_size = doc.size()
         min_height = int(doc_size.height()) + 4
         if min_height < 20:
+            # Sehr kurze Texte (oder leer) nicht zu hoch machen
             min_height = 20
         self.text_browser.setMinimumHeight(min_height)
+        self.text_browser.setMaximumHeight(min_height)
         self.text_browser.updateGeometry()
         self.updateGeometry()
 
