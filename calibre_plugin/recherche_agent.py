@@ -4,7 +4,8 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any, Dict, List, Tuple, Set
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 try:
     import websockets
@@ -16,9 +17,28 @@ from calibre_plugins.mcp_server_recherche.provider_client import ChatProviderCli
 
 log = logging.getLogger(__name__)
 
+FULLTEXT_TOOL = "calibre_fulltext_search"
+EXCERPT_TOOL = "calibre_get_excerpt"
+
 
 class MCPTransportError(RuntimeError):
     """Raised when the MCP bridge cannot fulfil a request."""
+
+
+@dataclass
+class SearchHit:
+    book_id: Any
+    title: str
+    isbn: Optional[str]
+    snippet: str
+    origin_query: Optional[str] = None
+
+
+@dataclass
+class EnrichedHit:
+    hit: SearchHit
+    excerpt_text: Optional[str] = None
+    excerpt_source: Optional[str] = None
 
 
 class RechercheAgent(object):
@@ -28,19 +48,29 @@ class RechercheAgent(object):
         self.prefs = prefs_obj
         self.chat_client = ChatProviderClient(self.prefs)
         # Werte aus Preferences mit Defaults lesen
-        self.max_query_variants = int(self.prefs.get('max_query_variants', 3))
-        self.max_hits_per_query = int(self.prefs.get('max_hits_per_query', 6))
-        self.max_hits_total = int(self.prefs.get('max_hits_total', 12))
-        self.target_sources = int(self.prefs.get('target_sources', 3))
-        self.max_excerpts = int(self.prefs.get('max_excerpts', 4))
-        self.max_excerpt_chars = int(self.prefs.get('max_excerpt_chars', 1200))
-        self.context_hit_limit = int(self.prefs.get('context_hit_limit', 8))
-        self.request_timeout = int(self.prefs.get('request_timeout', 15))
+        self.max_query_variants = int(self.prefs.get("max_query_variants", 3))
+        self.max_hits_per_query = int(self.prefs.get("max_hits_per_query", 6))
+        self.max_hits_total = int(self.prefs.get("max_hits_total", 12))
+        self.target_sources = int(self.prefs.get("target_sources", 3))
+        self.max_excerpts = int(self.prefs.get("max_excerpts", 4))
+        self.max_excerpt_chars = int(self.prefs.get("max_excerpt_chars", 1200))
+        self.context_hit_limit = int(self.prefs.get("context_hit_limit", 8))
+        self.request_timeout = int(self.prefs.get("request_timeout", 15))
         # Cache der vom Server gemeldeten Tools (name -> schema)
         self._tool_schemas: Dict[str, Dict[str, Any]] = {}
 
-    def answer_question(self, question):
-        """Run planning, tool orchestration, and summarisation."""
+    # ------------------------------------------------------------------ Public API
+
+    def answer_question(self, question: str) -> str:
+        """Vollständigen Recherche-Workflow ausführen und LLM-Antwort zurückgeben.
+
+        Workflow:
+        1. Suchqueries planen (LLM-gestützt oder Fallback: Originalfrage)
+        2. Volltextsuche via MCP-Tools ausführen und Treffer sammeln
+        3. Ausgewählte Treffer mit Excerpts anreichern
+        4. Prompt auf Basis der Treffer bauen
+        5. LLM mit dem Prompt abfragen
+        """
         question = (question or "").strip()
         if not question:
             return ""
@@ -48,19 +78,20 @@ class RechercheAgent(object):
         log.info("Recherche-Agent gestartet: %s", question)
 
         try:
-            # Sicherstellen, dass die Tool-Liste initialisiert ist
             self._ensure_tools_cached()
-            queries = self._plan_search_queries(question)
-            hits = self._collect_fulltext_hits(queries)
-            if not hits:
+
+            search_queries = self._plan_search_queries(question)
+            search_hits = self._run_search_plan(search_queries)
+            if not search_hits:
                 return "System: Keine passenden Treffer im MCP-Server gefunden."
-            enriched_hits = self._fetch_excerpts_for_hits(hits)
+
+            enriched_hits = self._enrich_hits_with_excerpts(search_hits)
         except MCPTransportError as exc:
             log.error("MCP-Workflow fehlgeschlagen: %s", exc)
             return f"System: Recherche via MCP fehlgeschlagen: {exc}"
 
         prompt = self._build_prompt(question, enriched_hits)
-        return self.chat_client.send_chat(prompt)
+        return self._ask_llm(prompt)
 
     # ------------------ Tool discovery ------------------
 
@@ -122,26 +153,27 @@ class RechercheAgent(object):
                 queries.append(cleaned)
         return queries
 
-    # ------------------ MCP tool calls ------------------
+    # ------------------ Search plan execution ------------------
 
-    def _collect_fulltext_hits(self, queries: List[str]) -> List[Dict[str, Any]]:
-        """Run the full-text search for each query and aggregate unique hits."""
-        if not self._has_tool("calibre_fulltext_search"):
-            raise MCPTransportError("Tool 'calibre_fulltext_search' ist auf dem MCP-Server nicht verfuegbar.")
+    def _run_search_plan(self, queries: List[str]) -> List[SearchHit]:
+        """Alle Suchqueries nacheinander ausführen und deduplizierte Treffer liefern."""
+        if not self._has_tool(FULLTEXT_TOOL):
+            raise MCPTransportError(
+                f"Tool '{FULLTEXT_TOOL}' ist auf dem MCP-Server nicht verfuegbar."
+            )
 
-        aggregated: List[Dict[str, Any]] = []
+        aggregated: List[SearchHit] = []
         seen_ids: Set[Tuple[Any, Any]] = set()
 
         for query in queries:
             hits = self._run_fulltext_search(query, max_hits=self.max_hits_per_query)
             log.info("Fulltext-Suche %r lieferte %d Treffer", query, len(hits))
+
             for hit in hits:
-                identifier = (hit.get("book_id"), hit.get("isbn"))
+                identifier = (hit.book_id, hit.isbn)
                 if identifier in seen_ids:
                     continue
-                entry = dict(hit)
-                entry.setdefault("origin_query", query)
-                aggregated.append(entry)
+                aggregated.append(hit)
                 seen_ids.add(identifier)
                 if len(aggregated) >= self.max_hits_total:
                     break
@@ -150,27 +182,35 @@ class RechercheAgent(object):
 
         return aggregated[: self.max_hits_total]
 
-    def _run_fulltext_search(self, query, max_hits=5):
-        # FastMCP erzeugt fuer unsere Tools typischerweise ein Schema mit "input"-Property
+    def _run_fulltext_search(self, query: str, max_hits: int = 5) -> List[SearchHit]:
         arguments = {"query": query, "limit": max_hits}
         payload = {
-            "name": "calibre_fulltext_search",
-            "arguments": self._wrap_arguments("calibre_fulltext_search", arguments),
+            "name": FULLTEXT_TOOL,
+            "arguments": self._wrap_arguments(FULLTEXT_TOOL, arguments),
         }
         response = self._call_mcp("call_tool", params=payload, request_id="ft-search")
         result = (response.get("result") or {})
-        hits = result.get("hits")
-        if hits is None and "content" in result:
-            hits = self._extract_hits_from_content(result["content"])
-        return hits or []
+        raw_hits = result.get("hits")
+        if raw_hits is None and "content" in result:
+            raw_hits = self._extract_hits_from_content(result["content"])
+
+        hits: List[SearchHit] = []
+        for raw in raw_hits or []:
+            if not isinstance(raw, dict):
+                continue
+            hits.append(
+                SearchHit(
+                    book_id=raw.get("book_id"),
+                    title=raw.get("title") or "",
+                    isbn=raw.get("isbn"),
+                    snippet=raw.get("snippet") or "",
+                    origin_query=query,
+                )
+            )
+        return hits
 
     def _wrap_arguments(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Passe Argument-Struktur an das gemeldete input_schema an.
-
-        Viele FastMCP-Tools verwenden ein Schema der Form
-        {"properties": {"input": {"$ref": ...}}, "required": ["input"]}.
-        In diesem Fall muessen wir unsere arguments unter "input" schachteln.
-        """
+        """Passe Argument-Struktur an das gemeldete input_schema an."""
         schema_entry = self._tool_schemas.get(tool_name) or {}
         input_schema = schema_entry.get("input_schema") or {}
         props = input_schema.get("properties") or {}
@@ -186,10 +226,8 @@ class RechercheAgent(object):
 
         hits: List[Dict[str, Any]] = []
         for block in content:
-            # Expect something like {"type": "object", "value": {...}}
             value = None
             if isinstance(block, dict):
-                # direct hits-list
                 if "hits" in block:
                     value = block
                 else:
@@ -203,30 +241,39 @@ class RechercheAgent(object):
                         hits.append(h)
         return hits
 
-    def _fetch_excerpts_for_hits(self, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        if not self._has_tool("calibre_get_excerpt"):
-            # Ohne Excerpt-Tool liefern wir nur Snippets, keine harte Fehlermeldung
-            return list(hits)
+    # ------------------ Excerpt enrichment ------------------
 
-        enriched: List[Dict[str, Any]] = []
+    def _enrich_hits_with_excerpts(self, hits: List[SearchHit]) -> List[EnrichedHit]:
+        """Ausgewählte Treffer mit Excerpts anreichern."""
+        if not self._has_tool(EXCERPT_TOOL):
+            # Ohne Excerpt-Tool liefern wir nur Snippets, keine harte Fehlermeldung
+            return [EnrichedHit(hit=h) for h in hits]
+
+        enriched: List[EnrichedHit] = []
         excerpt_count = 0
+
         for hit in hits:
-            entry = dict(hit)
-            isbn = entry.get("isbn") or entry.get("book_id")
-            if isbn and excerpt_count < self.max_excerpts:
+            excerpt_text: Optional[str] = None
+            excerpt_source: Optional[str] = None
+
+            if hit.isbn and excerpt_count < self.max_excerpts:
                 try:
-                    excerpt_payload = self._call_excerpt_tool(isbn)
+                    payload = self._call_excerpt_tool(hit.isbn)
                 except MCPTransportError as exc:
-                    log.warning("Excerpt-Tool fehlgeschlagen fuer ISBN %s: %s", isbn, exc)
+                    log.warning(
+                        "Excerpt-Tool fehlgeschlagen fuer ISBN %s: %s", hit.isbn, exc
+                    )
                 else:
-                    entry["excerpt"] = (
-                        excerpt_payload.get("text")
-                        or excerpt_payload.get("excerpt")
+                    excerpt_text = (
+                        payload.get("text")
+                        or payload.get("excerpt")
                         or ""
                     )
-                    entry["excerpt_source"] = excerpt_payload.get("source_hint")
+                    excerpt_source = payload.get("source_hint")
                     excerpt_count += 1
-            enriched.append(entry)
+
+            enriched.append(EnrichedHit(hit=hit, excerpt_text=excerpt_text, excerpt_source=excerpt_source))
+
         return enriched
 
     def _call_excerpt_tool(self, isbn: str) -> Dict[str, Any]:
@@ -235,10 +282,12 @@ class RechercheAgent(object):
             "max_chars": self.max_excerpt_chars,
         }
         payload = {
-            "name": "calibre_get_excerpt",
-            "arguments": self._wrap_arguments("calibre_get_excerpt", arguments),
+            "name": EXCERPT_TOOL,
+            "arguments": self._wrap_arguments(EXCERPT_TOOL, arguments),
         }
-        response = self._call_mcp("call_tool", params=payload, request_id=f"excerpt-{isbn}")
+        response = self._call_mcp(
+            "call_tool", params=payload, request_id=f"excerpt-{isbn}"
+        )
         result = response.get("result")
         if not result:
             raise MCPTransportError("Excerpt-Tool lieferte kein Ergebnis")
@@ -246,7 +295,9 @@ class RechercheAgent(object):
 
     # ------------------ Low-level MCP/WebSocket transport ------------------
 
-    def _call_mcp(self, method: str, params: Dict[str, Any], request_id: str | None = None) -> Dict[str, Any]:
+    def _call_mcp(
+        self, method: str, params: Dict[str, Any], request_id: str | None = None
+    ) -> Dict[str, Any]:
         """Allgemeiner synchroner MCP-RPC-Wrapper ueber WebSocket."""
 
         if websockets is None:  # pragma: no cover - nur Laufzeitumgebung
@@ -269,7 +320,9 @@ class RechercheAgent(object):
                     await websocket.send(data)
                     raw = await websocket.recv()
             except Exception as exc:  # noqa: BLE001
-                raise MCPTransportError(f"Verbindung zum MCP-Server fehlgeschlagen: {exc}") from exc
+                raise MCPTransportError(
+                    f"Verbindung zum MCP-Server fehlgeschlagen: {exc}"
+                ) from exc
 
             try:
                 return json.loads(raw)
@@ -281,7 +334,6 @@ class RechercheAgent(object):
         try:
             response = asyncio.run(_do_call())
         except RuntimeError as exc:
-            # Falls bereits ein Eventloop laeuft (z. B. in manchen Qt-Konstellationen)
             log.error("Async-Call im laufenden Eventloop fehlgeschlagen: %s", exc)
             raise MCPTransportError(
                 "Konnte keine WebSocket-Verbindung zum MCP-Server herstellen (Eventloop-Konflikt)."
@@ -294,7 +346,6 @@ class RechercheAgent(object):
 
     def _tool_endpoint(self) -> str:
         host, port = self._server_config()
-        # WebSocket-URL; Server lauscht auf ws://host:port
         return f"ws://{host}:{port}"
 
     def _server_config(self) -> Tuple[str, int]:
@@ -313,30 +364,34 @@ class RechercheAgent(object):
         else:
             try:
                 value = self.prefs[key]
-            except Exception:  # noqa: BLE001 - prefs may not implement __getitem__
+            except Exception:  # noqa: BLE001
                 value = default
         return value if value not in (None, "") else default
 
-    # ------------------ Prompt construction ------------------
+    # ------------------ Prompt construction & LLM ------------------
 
-    def _build_prompt(self, question: str, hits: List[Dict[str, Any]]) -> str:
+    def _build_prompt(self, question: str, hits: List[EnrichedHit]) -> str:
         if not hits:
             context_block = "Keine passenden Treffer gefunden."
         else:
             lines: List[str] = ["Suchtreffer und Auszuege:"]
-            for idx, hit in enumerate(hits[: self.context_hit_limit], start=1):
-                title = hit.get("title") or "Unbekannter Titel"
-                isbn = hit.get("isbn") or "Unbekannt"
+            for idx, enriched in enumerate(hits[: self.context_hit_limit], start=1):
+                hit = enriched.hit
+                title = hit.title or "Unbekannter Titel"
+                isbn = hit.isbn or "Unbekannt"
                 lines.append(f"[{idx}] {title} (ISBN: {isbn})")
-                snippet = self._trim_text(hit.get("snippet"))
+
+                snippet = self._trim_text(hit.snippet)
                 if snippet:
                     lines.append(f"Snippet: {snippet}")
-                excerpt = self._trim_text(hit.get("excerpt"))
+
+                excerpt = self._trim_text(enriched.excerpt_text)
                 if excerpt:
                     lines.append(f"Excerpt: {excerpt}")
-                origin = hit.get("origin_query")
-                if origin:
-                    lines.append(f"Suchbegriff: {origin}")
+
+                if hit.origin_query:
+                    lines.append(f"Suchbegriff: {hit.origin_query}")
+
                 lines.append("")
             context_block = "\n".join(lines)
 
@@ -351,6 +406,9 @@ class RechercheAgent(object):
             " (3) Offene Punkte."
         )
         return prompt
+
+    def _ask_llm(self, prompt: str) -> str:
+        return self.chat_client.send_chat(prompt)
 
     @staticmethod
     def _trim_text(text: Any, limit: int = 600) -> str:
