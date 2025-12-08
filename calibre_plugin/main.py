@@ -316,10 +316,13 @@ class MCPServerRechercheDialog(QDialog):
         self._status_timer.setSingleShot(True)
         self._status_timer.timeout.connect(self._show_next_status)
 
-        main_layout = QVBoxLayout(self)
-        self.setLayout(main_layout)
+        # Quellen-Panel interner Zustand
+        self._source_hits = []  # Liste von Dicts mit {book_id, title, isbn, excerpt}
 
-        # --- Top row: settings + server start/stop -------------------------
+        # Oberes Layout mit Steuerleiste bleibt wie gehabt
+        outer_layout = QVBoxLayout(self)
+        self.setLayout(outer_layout)
+
         top_row = QHBoxLayout()
 
         self.settings_button = QPushButton('Einstellungen', self)
@@ -340,8 +343,14 @@ class MCPServerRechercheDialog(QDialog):
         self.debug_checkbox.setChecked(prefs.get('debug_trace_enabled', True))
         top_row.addWidget(self.debug_checkbox)
 
+        # Toggle fuer das Quellen-Panel
+        self.sources_toggle = QCheckBox('Quellen anzeigen', self)
+        self.sources_toggle.setChecked(True)
+        self.sources_toggle.stateChanged.connect(self._toggle_sources_panel)
+        top_row.addWidget(self.sources_toggle)
+
         top_row.addStretch(1)
-        main_layout.addLayout(top_row)
+        outer_layout.addLayout(top_row)
 
         # Optional connection info from prefs
         host = prefs['server_host']
@@ -349,16 +358,20 @@ class MCPServerRechercheDialog(QDialog):
         self.conn_label = QLabel(
             f'Ziel (spaeter): ws://{host}:{port}', self
         )
-        main_layout.addWidget(self.conn_label)
+        outer_layout.addWidget(self.conn_label)
 
-        # --- Chat view -----------------------------------------------------
-        # Altes QTextEdit durch ein flexibleres ChatPanel ersetzen
+        # Hauptrahmen: links Chat, rechts Quellen
+        main_split = QHBoxLayout()
+        outer_layout.addLayout(main_split)
+
+        # Linke Seite: Chat
+        chat_column = QVBoxLayout()
+        main_split.addLayout(chat_column, 3)
+
         self.chat_panel = ChatPanel(self)
-        main_layout.addWidget(self.chat_panel)
+        chat_column.addWidget(self.chat_panel)
 
-        # --- Input row -----------------------------------------------------
         input_row = QHBoxLayout()
-
         self.input_edit = QLineEdit(self)
         self.input_edit.setPlaceholderText(
             'Frage oder Suchtext fuer die MCP-Recherche eingeben ...'
@@ -372,15 +385,27 @@ class MCPServerRechercheDialog(QDialog):
         self.send_button.clicked.connect(self.send_message)
         input_row.addWidget(self.send_button)
 
-        main_layout.addLayout(input_row)
+        chat_column.addLayout(input_row)
 
-        # Einfache Statusleiste am unteren Rand
+        # Rechte Seite: Quellen-Panel
+        self.sources_panel = QScrollArea(self)
+        self.sources_panel.setWidgetResizable(True)
+        self.sources_panel.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sources_container = QWidget(self.sources_panel)
+        self.sources_layout = QVBoxLayout(sources_container)
+        self.sources_layout.setContentsMargins(4, 4, 4, 4)
+        self.sources_layout.setSpacing(6)
+        self.sources_layout.addStretch(1)
+        self.sources_panel.setWidget(sources_container)
+        main_split.addWidget(self.sources_panel, 2)
+
+        # Statusleiste unten wie gehabt
         status_row = QHBoxLayout()
         self.status_label = QLabel('', self)
         self.status_label.setStyleSheet('color: #555555; font-size: 10px;')
         status_row.addWidget(self.status_label)
         status_row.addStretch(1)
-        main_layout.addLayout(status_row)
+        outer_layout.addLayout(status_row)
 
         # Window setup
         self.setWindowTitle('MCP Server Recherche')
@@ -840,6 +865,94 @@ class MCPServerRechercheDialog(QDialog):
         log.info("Auto-detected Python executable: %s", chosen)
         return chosen
 
-def create_dialog(gui, icon, do_user_config):
-    d = MCPServerRechercheDialog(gui, icon, do_user_config)
-    return d
+    def _toggle_sources_panel(self, state: int) -> None:
+        """Quellen-Panel ein-/ausblenden.
+
+        Wird direkt an die entsprechende Checkbox gebunden.
+        """
+        visible = bool(state)
+        self.sources_panel.setVisible(visible)
+
+    def update_sources(self, hits: list[dict]) -> None:
+        """Quellenanzeige rechts mit neuen Treffern fuellen.
+
+        Erwartet eine Liste von Dicts mit mindestens
+        {"book_id", "title", "isbn", "excerpt"}.
+        """
+        self._source_hits = hits or []
+
+        # Alte Widgets entfernen
+        while self.sources_layout.count() > 0:
+            item = self.sources_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+        if not self._source_hits:
+            self.sources_layout.addStretch(1)
+            return
+
+        # Fuer jeden Treffer ein kleines Panel mit Titel, ISBN, Excerpt-Vorschau
+        for hit in self._source_hits:
+            w = QWidget(self.sources_panel)
+            lay = QVBoxLayout(w)
+            lay.setContentsMargins(4, 4, 4, 4)
+            lay.setSpacing(2)
+
+            title = hit.get('title') or 'Unbekannter Titel'
+            isbn = hit.get('isbn') or ''
+            book_id = hit.get('book_id')
+
+            header_row = QHBoxLayout()
+            header_label = QLabel(f"{title}", w)
+            header_label.setStyleSheet('font-weight: bold;')
+            header_row.addWidget(header_label)
+            if isbn:
+                header_row.addWidget(QLabel(f"ISBN: {isbn}", w))
+            header_row.addStretch(1)
+            # Klickbarer Button zum Markieren im Calibre-Hauptfenster
+            mark_btn = QToolButton(w)
+            mark_btn.setText('☆')
+            mark_btn.setCheckable(True)
+            mark_btn.clicked.connect(lambda checked, bid=book_id, btn=mark_btn: self._toggle_mark_book(bid, btn, checked))
+            header_row.addWidget(mark_btn)
+            lay.addLayout(header_row)
+
+            # Einfaches Excerpt-Preview, spaeter ggf. mit Aufklappfunktion
+            excerpt = (hit.get('excerpt') or '').strip()
+            if excerpt:
+                preview_lines = '\n'.join(excerpt.splitlines()[:3])
+                preview_label = QLabel(preview_lines, w)
+                preview_label.setStyleSheet('font-size: 10px; color: #555;')
+                preview_label.setWordWrap(True)
+                lay.addWidget(preview_label)
+
+            self.sources_layout.addWidget(w)
+
+        self.sources_layout.addStretch(1)
+
+    def _toggle_mark_book(self, book_id: int, button: QToolButton, checked: bool) -> None:
+        """Buch im Calibre-Hauptfenster markieren oder entmarkieren.
+
+        Nutzt die bekannte marked=True Technik, wie sie auch andere
+        Plugins verwenden. Beim erneuten Klick wird das Markieren
+        umgekehrt.
+        """
+        if book_id is None:
+            return
+        try:
+            db = self.db
+            # Mark-Zustand im GUI toggeln
+            if checked:
+                button.setText('★')
+                db.set_marked_ids(list(set(db.marked_ids | {book_id})))
+            else:
+                button.setText('☆')
+                current = set(db.marked_ids)
+                if book_id in current:
+                    current.remove(book_id)
+                db.set_marked_ids(list(current))
+            # Ansicht im GUI aktualisieren
+            self.gui.library_view.model().refresh_marked()
+        except Exception:
+            log.exception("Failed to toggle marked state for book_id=%r", book_id)
