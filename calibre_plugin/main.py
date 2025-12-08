@@ -14,8 +14,10 @@ if False:
 
 import logging
 import os
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 from qt.core import (
     QDialog,
@@ -112,6 +114,9 @@ class MCPServerRechercheDialog(QDialog):
         self.calibre_library_path = self._detect_calibre_library()
         log.info("Detected Calibre library path: %s", self.calibre_library_path)
 
+        self.project_root = Path(__file__).resolve().parents[1]
+        self.src_path = self.project_root / 'src'
+
     # ------------------------------------------------------------------ UI
 
     def open_settings(self):
@@ -165,6 +170,12 @@ class MCPServerRechercheDialog(QDialog):
         env['MCP_SERVER_HOST'] = host
         env['MCP_SERVER_PORT'] = str(port)
         env['CALIBRE_LIBRARY_PATH'] = library_path
+        if self.src_path.exists():
+            existing = env.get('PYTHONPATH')
+            components = [str(self.src_path)]
+            if existing:
+                components.append(existing)
+            env['PYTHONPATH'] = os.pathsep.join(components)
 
         log.info(
             "Starting MCP server: host=%s port=%s library_source=%s library=%r env=%s",
@@ -172,16 +183,18 @@ class MCPServerRechercheDialog(QDialog):
             port,
             source,
             library_path,
-            {k: env.get(k) for k in ('MCP_SERVER_HOST', 'MCP_SERVER_PORT', 'CALIBRE_LIBRARY_PATH')},
+            {k: env.get(k) for k in ('MCP_SERVER_HOST', 'MCP_SERVER_PORT', 'CALIBRE_LIBRARY_PATH', 'PYTHONPATH')},
         )
 
-        cmd = [sys.executable, '-m', 'calibre_mcp_server.websocket_server']
-        log.info("Command: %s", cmd)
+        python_cmd = self._python_executable()
+        cmd = [python_cmd, '-m', 'calibre_mcp_server.websocket_server']
+        log.info("Command: %s cwd=%s", cmd, self.project_root)
 
         try:
             self.server_process = subprocess.Popen(
                 cmd,
                 env=env,
+                cwd=str(self.project_root),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -302,3 +315,13 @@ class MCPServerRechercheDialog(QDialog):
         self.pending_request = busy
         self.send_button.setEnabled(not busy)
         self.send_button.setText('Senden...' if busy else 'Senden')
+
+    def _python_executable(self) -> str:
+        python_cmd = sys.executable
+        basename = os.path.basename(python_cmd).lower()
+        if basename.startswith('calibre-') or basename == 'pythonw.exe':
+            preferred = shutil.which('python') or shutil.which('python3')
+            if preferred:
+                python_cmd = preferred
+        return python_cmd
+
