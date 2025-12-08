@@ -57,6 +57,9 @@ class RechercheAgent(object):
         self.max_excerpt_chars = int(self.prefs.get("max_excerpt_chars", 1200))
         self.context_hit_limit = int(self.prefs.get("context_hit_limit", 8))
         self.request_timeout = int(self.prefs.get("request_timeout", 15))
+        self.min_hits_required = int(self.prefs.get("min_hits_required", 3))
+        self.max_refinement_rounds = int(self.prefs.get("max_refinement_rounds", 2))
+        self.context_influence = int(self.prefs.get("context_influence", 50))
         # Cache der vom Server gemeldeten Tools (name -> schema)
         self._tool_schemas: Dict[str, Dict[str, Any]] = {}
         # Session-State fuer Folgefragen
@@ -93,11 +96,49 @@ class RechercheAgent(object):
             self._ensure_tools_cached()
 
             effective_question = self._resolve_effective_question(question)
-            search_queries = self._plan_search_queries(effective_question)
-            search_hits = self._run_search_plan(search_queries)
-            if not search_hits:
+
+            # Refinement-Loop: LLM kann bei zu wenigen Treffern neue Queries vorschlagen
+            all_hits: List[SearchHit] = []
+            used_query_sets: List[List[str]] = []
+
+            current_queries = self._plan_search_queries(effective_question)
+            used_query_sets.append(current_queries)
+            hits = self._run_search_plan(current_queries)
+            all_hits.extend(hits)
+
+            round_idx = 0
+            while len(all_hits) < self.min_hits_required and round_idx < self.max_refinement_rounds:
+                round_idx += 1
+                self._trace_log(
+                    f"Refinement-Runde {round_idx}: nur {len(all_hits)} Treffer, KI formuliert neue Suchabfragen."
+                )
+                refinement_queries = self._refine_search_queries(
+                    original_question=question,
+                    effective_question=effective_question,
+                    previous_queries=current_queries,
+                    hits=hits,
+                )
+                if not refinement_queries:
+                    break
+                used_query_sets.append(refinement_queries)
+                current_queries = refinement_queries
+                hits = self._run_search_plan(current_queries)
+                all_hits.extend(hits)
+
+            # De-duplizieren
+            deduped: List[SearchHit] = []
+            seen_ids: Set[Tuple[Any, Any]] = set()
+            for h in all_hits:
+                ident = (h.book_id, h.isbn)
+                if ident in seen_ids:
+                    continue
+                seen_ids.add(ident)
+                deduped.append(h)
+
+            if not deduped:
                 return "System: Keine passenden Treffer im MCP-Server gefunden."
 
+            search_hits = deduped[: self.max_hits_total]
             enriched_hits = self._enrich_hits_with_excerpts(search_hits)
             # Session-State aktualisieren
             self._last_question = question
@@ -565,3 +606,64 @@ class RechercheAgent(object):
             return cleaned
         return cleaned[: limit - 3] + "..."
 
+    def _refine_search_queries(
+        self,
+        original_question: str,
+        effective_question: str,
+        previous_queries: List[str],
+        hits: List[SearchHit],
+    ) -> List[str]:
+        """Nutze den LLM, um auf Basis bisheriger Ergebnisse bessere FT-Queries zu erzeugen."""
+        # Kontextblock fuer den LLM bauen
+        lines: List[str] = []
+        lines.append("Frage des Nutzers:")
+        lines.append(original_question)
+        lines.append("")
+
+        if self._last_question and self.context_influence > 0:
+            lines.append("Vorherige Frage im Dialog:")
+            lines.append(self._last_question)
+            lines.append("")
+
+        lines.append("Bisher verwendete Volltext-Suchabfragen:")
+        for q in previous_queries:
+            lines.append(f"- {q!r}")
+        lines.append("")
+
+        if hits:
+            lines.append("Ausschnitt der bisherigen Treffer (Titel + Snippets):")
+            for h in hits[:3]:
+                lines.append(f"* {h.title or 'Unbekannt'} (ISBN: {h.isbn or 'Unbekannt'})")
+                lines.append(f"  Snippet: {self._trim_text(h.snippet)}")
+            lines.append("")
+
+        instruction = (
+            "Auf Basis der obigen Information:\n"
+            "- Formuliere bis zu drei neue, alternative Suchabfragen fuer eine Volltextsuche "
+            "in einer technischen Fachbibliothek.\n"
+            "- Nutze vor allem zentrale Fachbegriffe aus der Fahrzeugtechnik und Bussystemen, "
+            "z. B. bekannte Protokolle oder Abkuerzungen (CAN, LIN, FlexRay, MOST etc.).\n"
+            "- Die Queries muessen in der Calibre-Suchsprache mit einfachen Begriffen, AND/OR "
+            "oder Begriffskombinationen stehen (z. B. 'lin AND fahrzeugbus' oder 'local interconnect network').\n"
+            "- Gib jede Suchabfrage in einer eigenen Zeile aus, ohne Erklaertext."
+        )
+
+        prompt = "\n".join(lines) + "\n" + instruction
+
+        try:
+            llm_response = self.chat_client.send_chat(prompt)
+            new_queries = self._extract_queries(llm_response)
+        except Exception as exc:
+            log.warning("LLM-Refinement fehlgeschlagen: %s", exc)
+            return []
+
+        # Doppelte und identische Queries herausfiltern
+        filtered: List[str] = []
+        prev_set = set(previous_queries)
+        for q in new_queries:
+            if q in prev_set:
+                continue
+            if q not in filtered:
+                filtered.append(q)
+
+        return filtered[: self.max_query_variants]

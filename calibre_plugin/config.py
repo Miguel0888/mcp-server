@@ -55,6 +55,9 @@ prefs.defaults['max_excerpts'] = 4
 prefs.defaults['max_excerpt_chars'] = 1200
 prefs.defaults['context_hit_limit'] = 8
 prefs.defaults['request_timeout'] = 15
+prefs.defaults['min_hits_required'] = 3
+prefs.defaults['max_refinement_rounds'] = 2
+prefs.defaults['context_influence'] = 50
 
 # Schlagwort-/Keyword-Suche
 prefs.defaults['use_llm_query_planning'] = True
@@ -159,6 +162,16 @@ class MCPServerRechercheConfigWidget(QWidget):
 
         self.request_timeout_edit = _make_int_edit('request_timeout', 15)
         tuning_form.addRow(_('Timeout fuer MCP-Anfragen (Sekunden, aktuell nur informativ):'), self.request_timeout_edit)
+
+        self.min_hits_required_edit = _make_int_edit('min_hits_required', 3)
+        tuning_form.addRow(_('Mindestanzahl Treffer vor Abbruch/Refinement:'), self.min_hits_required_edit)
+
+        self.max_refinement_rounds_edit = _make_int_edit('max_refinement_rounds', 2)
+        tuning_form.addRow(_('Max. Refinement-Runden (LLM-Umformulierung):'), self.max_refinement_rounds_edit)
+
+        self.context_influence_edit = _make_int_edit('context_influence', 50)
+        tuning_form.addRow(_('Kontext-Einfluss (0-100, hoeher = staerkerer Bezug auf vorige Fragen):'),
+                           self.context_influence_edit)
 
         # Info label
         info = QLabel(
@@ -312,6 +325,10 @@ class MCPServerRechercheConfigWidget(QWidget):
         prefs['max_excerpt_chars'] = _read_int(self.max_excerpt_chars_edit, 1200)
         prefs['context_hit_limit'] = _read_int(self.context_hit_limit_edit, 8)
         prefs['request_timeout'] = _read_int(self.request_timeout_edit, 15)
+        prefs['min_hits_required'] = _read_int(self.min_hits_required_edit, 3)
+        prefs['max_refinement_rounds'] = _read_int(self.max_refinement_rounds_edit, 2)
+        ci = _read_int(self.context_influence_edit, 50)
+        prefs['context_influence'] = max(0, min(ci, 100))
 
         # Suchmodus
         prefs['use_llm_query_planning'] = self.use_llm_planning_checkbox.isChecked()
