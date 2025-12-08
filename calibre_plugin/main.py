@@ -1000,12 +1000,25 @@ class MCPServerRechercheDialog(QDialog):
             # Kopfzeile mit Stern und Titel/ISBN
             header_row = QHBoxLayout()
             mark_btn = QToolButton(container)
-            mark_btn.setText('☆')
             mark_btn.setCheckable(True)
             mark_btn.setToolTip('Buch in Calibre markieren/entmarkieren (marked:true)')
-            mark_btn.clicked.connect(
-                lambda checked, bid=book_id: self._toggle_mark_book(bid, checked)
-            )
+            # Initialen Zustand aus db.marked_ids ableiten
+            is_marked = False
+            if book_id is not None:
+                try:
+                    current_marked = set(getattr(self.db, 'marked_ids', []) or [])
+                    is_marked = int(book_id) in current_marked
+                except Exception:
+                    log.exception('Konnte aktuellen Markierungszustand nicht lesen')
+            mark_btn.setChecked(is_marked)
+            mark_btn.setText('★' if is_marked else '☆')
+
+            def _on_mark_toggled(checked: bool, bid=book_id, btn=mark_btn):
+                # Button-Text entsprechend Zustand updaten und DB-Markierung toggeln
+                btn.setText('★' if checked else '☆')
+                self._toggle_mark_book(bid, checked)
+
+            mark_btn.toggled.connect(_on_mark_toggled)
             header_row.addWidget(mark_btn)
 
             header_label = QLabel(f"{title}", container)
@@ -1055,7 +1068,6 @@ class MCPServerRechercheDialog(QDialog):
             cover_label.setMaximumSize(96, 144)
             if book_id is not None:
                 try:
-                    # new_api.get_cover() liefert den Pfad zur Cover-Datei oder None
                     cover_path = getattr(self.db, 'new_api', self.db).cover(book_id)
                     if cover_path:
                         pix = QPixmap(cover_path)
