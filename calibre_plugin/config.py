@@ -58,6 +58,7 @@ prefs.defaults['request_timeout'] = 15
 prefs.defaults['min_hits_required'] = 3
 prefs.defaults['max_refinement_rounds'] = 2
 prefs.defaults['context_influence'] = 50
+prefs.defaults['max_search_rounds'] = 2
 # Benutzeranpassbare Prompt-Zusaetze
 prefs.defaults['query_planner_hint'] = ''
 prefs.defaults['answer_style_hint'] = ''
@@ -168,6 +169,9 @@ class MCPServerRechercheConfigWidget(QWidget):
 
         self.max_refinement_rounds_edit = _make_int_edit('max_refinement_rounds', 2)
         tuning_form.addRow(_('Max. Refinement-Runden (LLM-Umformulierung):'), self.max_refinement_rounds_edit)
+
+        self.max_search_rounds_edit = _make_int_edit('max_search_rounds', 2)
+        tuning_form.addRow(_('Max. Suchrunden (Volltext + Refinements):'), self.max_search_rounds_edit)
 
         self.context_influence_edit = _make_int_edit('context_influence', 50)
         tuning_form.addRow(_('Kontext-Einfluss (0-100, hoeher = staerkerer Bezug auf vorige Fragen):'),
@@ -349,6 +353,7 @@ class MCPServerRechercheConfigWidget(QWidget):
         prefs['request_timeout'] = _read_int(self.request_timeout_edit, 15)
         prefs['min_hits_required'] = _read_int(self.min_hits_required_edit, 3)
         prefs['max_refinement_rounds'] = _read_int(self.max_refinement_rounds_edit, 2)
+        prefs['max_search_rounds'] = _read_int(self.max_search_rounds_edit, 2)
         ci = _read_int(self.context_influence_edit, 50)
         prefs['context_influence'] = max(0, min(ci, 100))
         prefs['query_planner_hint'] = self.query_planner_hint_edit.text().strip()
