@@ -692,13 +692,17 @@ class MCPServerRechercheDialog(QDialog):
         """Trace-Callback fuer den Agenten (immer im UI-Thread).
 
         Debug-Ausgaben werden pro Frage als ein Block gesammelt. Der
-        Beschreibungstext (Titel) kann sich waehrend des laufenden Steps
-        aendern. Der Pfeil zum Aufklappen bleibt erhalten.
+        Beschreibungstext (Titel) spiegelt immer den *aktuellen* Schritt
+        wider (letzte Trace-Zeile), waehrend der aufgeklappte Bereich
+        den gesamten Verlauf des Toolschritts zeigt.
         """
         text = (message or '').strip()
         if text:
-            if self._trace_title is None:
-                self._trace_title = text
+            # Aktuellen Schritt immer als Titel verwenden und Trace-Verlauf
+            # erweitern. So bleibt der Text rechts neben dem Pfeil nicht auf
+            # der ersten Aktion haengen, sondern zeigt den jeweils letzten
+            # Agenten-Step (z.B. aktuell laufenden Toolcall).
+            self._trace_title = text
             self._trace_buffer.append(text)
 
         if self._current_ai_message is not None:
