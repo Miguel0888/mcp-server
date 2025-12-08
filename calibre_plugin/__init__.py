@@ -15,8 +15,6 @@ import zipfile
 import pkgutil
 import tempfile
 import os
-import logging
-import importlib
 
 
 # ---------------------------------------------------------------------------
@@ -100,34 +98,6 @@ def _bootstrap_site_packages():
 
 _bootstrap_module_paths()
 _bootstrap_site_packages()
-
-site_packages_dir = PLUGIN_DIR / 'site-packages'
-if site_packages_dir.exists():
-    sys.path.insert(0, str(site_packages_dir))
-loader = pkgutil.get_loader(__name__)
-archive_path = getattr(loader, 'archive', None)
-if archive_path:
-    zip_site_packages = f"{archive_path}/site-packages"
-    if zip_site_packages not in sys.path:
-        sys.path.insert(0, zip_site_packages)
-
-log = logging.getLogger(__name__)
-
-
-def _log_dependency_visibility():
-    targets = [str(site_packages_dir), archive_path or '(no archive)']
-    log.info("MCP plugin sys.path entries relevant to site-packages: %s", targets)
-    log.debug("First 8 sys.path entries: %s", sys.path[:8])
-    for mod_name in ("websockets", "fastmcp"):
-        try:
-            module = importlib.import_module(mod_name)
-            location = getattr(module, "__file__", "<built-in>")
-            log.info("Module %s resolved from %s", mod_name, location)
-        except ModuleNotFoundError as exc:
-            log.warning("Module %s not importable: %s", mod_name, exc)
-
-
-_log_dependency_visibility()
 
 
 class MCPServerRecherchePlugin(InterfaceActionBase):
