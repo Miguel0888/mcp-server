@@ -34,34 +34,84 @@ class MetadataRepository(object):
                 f"metadata.db konnte nicht geoeffnet werden ({db_file}): {exc}"
             ) from exc
 
+    def _parse_boolean_query(self, raw: str) -> List[List[str]]:
+        """Parse a simple boolean query string into OR-of-AND keyword groups.
+
+        Beispiel:
+        - "fahrzeug AND bussysteme" -> [["fahrzeug", "bussysteme"]]
+        - "fahrzeug AND bussysteme OR ethernet" -> [["fahrzeug", "bussysteme"], ["ethernet"]]
+
+        Unterstuetzt nur die Operatoren AND/OR (case-insensitive) ohne Klammern
+        und NOT. Alles andere wird als normales Suchwort behandelt.
+        """
+        import re
+
+        raw = (raw or "").strip()
+        if not raw:
+            return []
+
+        # Tokenize: Worte und Operatoren AND/OR
+        # Wir splitten zunaechst auf Whitespace/Komma/Semikolon und behandeln
+        # dann explizit 'and'/'or' als Operatoren.
+        rough_tokens = [t for t in re.split(r"[\s,;]+", raw) if t]
+        tokens: List[str] = []
+        for tok in rough_tokens:
+            if tok.upper() in ("AND", "OR"):
+                tokens.append(tok.upper())
+            else:
+                tokens.append(tok)
+
+        if not tokens:
+            return []
+
+        groups: List[List[str]] = [[]]
+        current = groups[0]
+        last_op = "AND"
+
+        for tok in tokens:
+            if tok == "AND":
+                last_op = "AND"
+                continue
+            if tok == "OR":
+                last_op = "OR"
+                continue
+
+            # Normales Suchwort
+            if last_op == "OR" and current:
+                # Neue OR-Gruppe beginnen
+                current = [tok]
+                groups.append(current)
+            else:  # AND oder Start
+                current.append(tok)
+            last_op = "AND"
+
+        # Leere Gruppen entfernen
+        groups = [g for g in groups if g]
+        return groups
+
     def search_fulltext(self, query: str, limit: int) -> List[FulltextHit]:
         """Search in title, ISBN and comments using simple LIKE matching.
 
-        Diese Implementierung unterstuetzt auch Mehrwort-Queries.
-        Die Query wird in simple Tokens zerlegt (Whitespace-Separation),
-        die dann je nach Operator (AND/OR) in mehrere LIKE-Bedingungen
-        uebersetzt werden. So koennen Anfragen wie "fahrzeug bussysteme"
-        oder "fahrzeug, bussysteme" sinnvoll aufgelöst werden, ohne einen
-        vollstaendigen boolschen Parser zu benoetigen.
+        Unterstuetzt eine kleine Teilmenge der Calibre-FT-Sprache:
+        - Mehrere Suchbegriffe
+        - Operatoren AND / OR (case-insensitive), ohne Klammern/NOT
+
+        Beispiele:
+        - "fahrzeug AND bussysteme"
+        - "fahrzeug OR auto"
+        - "fahrzeug bussysteme" (enthaelt implizites AND ueber alle Worte)
         """
         raw = (query or "").strip()
         if not raw:
             return []
 
-        # Tokens sehr defensiv extrahieren: Whitespace + Kommata als Trenner
-        import re
-
-        tokens = [t for t in re.split(r"[\s,;]+", raw) if t]
-        if not tokens:
-            tokens = [raw]
-
-        # Aktuell besteht nur eine einfache AND-Semantik: alle Token muessen
-        # irgendwo in Titel/ISBN/Kommentar vorkommen. Das kann spaeter ueber
-        # Konfiguration erweitert werden.
-        operator = "AND"
+        groups = self._parse_boolean_query(raw)
+        if not groups:
+            return []
 
         hits: List[FulltextHit] = []
 
+        # Einzelne LIKE-Klausel fuer ein Suchwort
         base_clause = "(" + " OR ".join(
             [
                 "lower(b.title) LIKE lower(?)",
@@ -70,12 +120,19 @@ class MetadataRepository(object):
             ]
         ) + ")"
 
-        if operator == "AND":
-            where_clauses = [base_clause for _ in tokens]
-            where_sql = " AND ".join(where_clauses)
-        else:  # OR-Fallback, falls spaeter verwendet
-            where_sql = base_clause
-            tokens = [" ".join(tokens)]
+        # OR ueber Gruppen, AND ueber Begriffe innerhalb einer Gruppe
+        or_clauses = []
+        params: List[str] = []
+
+        for group in groups:
+            # implizites AND ueber alle Begriffe in der Gruppe
+            and_clauses = [base_clause for _ in group]
+            or_clauses.append("(" + " AND ".join(and_clauses) + ")")
+            for term in group:
+                pattern = f"%{term}%"
+                params.extend([pattern, pattern, pattern])
+
+        where_sql = " OR ".join(or_clauses)
 
         sql = f"""
         SELECT
@@ -91,10 +148,6 @@ class MetadataRepository(object):
         LIMIT ?
         """
 
-        params = []
-        for tok in tokens:
-            pattern = f"%{tok}%"
-            params.extend([pattern, pattern, pattern])
         params.append(limit)
 
         with self._connect() as conn:
@@ -105,7 +158,6 @@ class MetadataRepository(object):
 
         for row in rows:
             comments = row["comments"] or ""
-            # Snippet weiterhin auf der Original-Query basieren lassen
             snippet = self._build_snippet(comments, raw)
             if not snippet:
                 snippet = row["title"] or ""
