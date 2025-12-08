@@ -41,6 +41,7 @@ from qt.core import (
     QThread,
     QObject,
     pyqtSignal,
+    QFileDialog,
 )
 
 from calibre_plugins.mcp_server_recherche.config import prefs
@@ -350,6 +351,11 @@ class MCPServerRechercheDialog(QDialog):
         self.sources_toggle.setChecked(True)
         self.sources_toggle.stateChanged.connect(self._toggle_sources_panel)
         top_row.addWidget(self.sources_toggle)
+
+        # Export-Button fuer Quellen (JSON)
+        self.export_sources_button = QPushButton('Quellen exportieren', self)
+        self.export_sources_button.clicked.connect(self._export_sources_to_file)
+        top_row.addWidget(self.export_sources_button)
 
         top_row.addStretch(1)
         outer_layout.addLayout(top_row)
@@ -908,127 +914,33 @@ class MCPServerRechercheDialog(QDialog):
         visible = bool(state)
         self.sources_panel.setVisible(visible)
 
-    def update_sources(self, hits: list[dict]) -> None:
-        """Quellenanzeige rechts mit neuen Treffern fuellen.
+    def _export_sources_to_file(self) -> None:
+        """Aktuelle Quellenliste als JSON-Datei exportieren.
 
-        Erwartet eine Liste von Dicts mit mindestens
-        {"book_id", "title", "isbn", "excerpt"}.
+        Es wird der in update_sources gepflegte _source_hits-Status
+        verwendet. Die Datei enthaelt eine Liste von Objekten mit
+        mindestens book_id, title, isbn und excerpt.
         """
-        self._source_hits = hits or []
-
-        # Alte Widgets entfernen
-        while self.sources_layout.count() > 0:
-            item = self.sources_layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-
         if not self._source_hits:
-            self.sources_layout.addStretch(1)
-            return
-
-        # Fuer jeden Treffer ein Panel mit Titel, ISBN, Excerpt-Vorschau
-        # und aufklappbarem Volltext.
-        for hit in self._source_hits:
-            container = QWidget(self.sources_panel)
-            lay = QVBoxLayout(container)
-            lay.setContentsMargins(4, 4, 4, 4)
-            lay.setSpacing(2)
-
-            title = hit.get('title') or 'Unbekannter Titel'
-            isbn = hit.get('isbn') or ''
-            book_id = hit.get('book_id')
-
-            header_row = QHBoxLayout()
-            # Markierungs-Button LINKS neben dem Titel, damit er auch bei
-            # kleiner Fensterbreite sichtbar bleibt.
-            mark_btn = QToolButton(container)
-            mark_btn.setText('☆')
-            mark_btn.setCheckable(True)
-            mark_btn.setToolTip('Buch in Calibre markieren/entmarkieren')
-            mark_btn.clicked.connect(
-                lambda checked, bid=book_id, btn=mark_btn: self._toggle_mark_book(bid, btn, checked)
-            )
-            header_row.addWidget(mark_btn)
-
-            header_label = QLabel(f"{title}", container)
-            header_label.setStyleSheet('font-weight: bold;')
-            header_row.addWidget(header_label)
-            if isbn:
-                header_row.addWidget(QLabel(f"ISBN: {isbn}", container))
-            header_row.addStretch(1)
-            lay.addLayout(header_row)
-
-            excerpt_full = (hit.get('excerpt') or '').strip()
-            if excerpt_full:
-                # Preview (erste Zeilen des aktuellen Excerpts)
-                preview_lines = '\n'.join(excerpt_full.splitlines()[:3])
-                preview_label = QLabel(preview_lines, container)
-                preview_label.setStyleSheet('font-size: 10px; color: #555;')
-                preview_label.setWordWrap(True)
-                lay.addWidget(preview_label)
-
-                # Aufklappbarer Voll-Excerpt: wir bereiten den Container so vor,
-                # dass spaeter bei weiteren Runs fuer dasselbe Buch weitere
-                # Excerpts einfach angehaengt werden koennen (statt zu
-                # ueberschreiben). Zunaechst nutzen wir aber den im Hit
-                # gelieferten Text als einzigen Block.
-                toggle_row = QHBoxLayout()
-                toggle_row.setContentsMargins(0, 0, 0, 0)
-                toggle_row.setSpacing(2)
-                toggle_btn = QToolButton(container)
-                toggle_btn.setCheckable(True)
-                toggle_btn.setArrowType(Qt.RightArrow)
-                toggle_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
-                toggle_row.addWidget(toggle_btn)
-                desc_label = QLabel('Auszug anzeigen', container)
-                desc_label.setStyleSheet('font-size: 9px; color: #555;')
-                toggle_row.addWidget(desc_label)
-                toggle_row.addStretch(1)
-                lay.addLayout(toggle_row)
-
-                full_label = QTextEdit(container)
-                full_label.setReadOnly(True)
-                full_label.setPlainText(excerpt_full)
-                full_label.setVisible(False)
-                full_label.setStyleSheet('font-size: 10px; color: #555;')
-                full_label.setMaximumHeight(160)
-                lay.addWidget(full_label)
-
-                def _toggle_full(checked: bool, widget=full_label, btn=toggle_btn):
-                    widget.setVisible(checked)
-                    btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
-
-                toggle_btn.toggled.connect(_toggle_full)
-
-            self.sources_layout.addWidget(container)
-
-        self.sources_layout.addStretch(1)
-
-    def _toggle_mark_book(self, book_id: int, button: QToolButton, checked: bool) -> None:
-        """Buch im Calibre-Hauptfenster markieren oder entmarkieren.
-
-        Nutzt die bekannte marked=True Technik, wie sie auch andere
-        Plugins verwenden. Beim erneuten Klick wird das Markieren
-        umgekehrt. Wenn Calibre weitere Markierungen enthaelt, werden
-        diese beibehalten.
-        """
-        if book_id is None:
+            self._enqueue_status('Keine Quellen zum Exportieren vorhanden.')
             return
         try:
-            db = self.db
-            current = set(getattr(db, 'marked_ids', []) or [])
-            if checked:
-                current.add(book_id)
-                button.setText('★')
-            else:
-                current.discard(book_id)
-                button.setText('☆')
-            db.set_marked_ids(list(current))
-            # Ansicht im GUI aktualisieren, falls verfuegbar
-            try:
-                self.gui.library_view.model().refresh_marked()
-            except Exception:
-                log.exception('Failed to refresh marked state in library_view')
+            path, _ = QFileDialog.getSaveFileName(
+                self,
+                'Quellen als JSON speichern',
+                '',
+                'JSON-Dateien (*.json);;Alle Dateien (*.*)'
+            )
         except Exception:
-            log.exception("Failed to toggle marked state for book_id=%r", book_id)
+            log.exception('Fehler beim Oeffnen des Dateidialogs fuer Quellenexport')
+            return
+        if not path:
+            return
+        try:
+            import json
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(self._source_hits, f, ensure_ascii=False, indent=2)
+            self._enqueue_status(f'Quellen nach {path} exportiert.')
+        except Exception:
+            log.exception('Fehler beim Schreiben der Quellen-Exportdatei')
+            self._enqueue_status('Fehler beim Speichern der Quellen-Exportdatei.')
