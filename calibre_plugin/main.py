@@ -29,6 +29,11 @@ from qt.core import (
     QLineEdit,
     QTimer,
     QCheckBox,
+    QWidget,
+    QScrollArea,
+    QFrame,
+    QTextBrowser,
+    QToolButton,
 )
 
 from calibre_plugins.mcp_server_recherche.config import prefs
@@ -37,6 +42,161 @@ from calibre_plugins.mcp_server_recherche.recherche_agent import RechercheAgent
 
 
 log = logging.getLogger(__name__)
+
+
+class ChatMessageWidget(QFrame):
+    """Eine einzelne Chat-Nachricht (User, AI, System, Debug) mit optionalen Tool-Details."""
+
+    def __init__(self, role: str, text: str, tool_trace: str | None = None, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.role = role
+        self.tool_trace = tool_trace
+
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setFrameShadow(QFrame.Raised)
+
+        layout = QVBoxLayout(self)
+
+        # Kopfzeile mit Rollen-Label
+        header = QHBoxLayout()
+        role_label = QLabel(self._role_label(), self)
+        role_label.setStyleSheet(self._role_style())
+        header.addWidget(role_label)
+        header.addStretch(1)
+        layout.addLayout(header)
+
+        # Inhalt als QTextBrowser (unterstuetzt einfache Markdown/HTML)
+        self.text_browser = QTextBrowser(self)
+        self.text_browser.setOpenExternalLinks(True)
+        # Wenn verfuegbar, einfachen Markdown anzeigen, sonst HTML-Fallback
+        try:
+            # Qt6: QTextBrowser.setMarkdown; kann in aelteren Umgebungen fehlen
+            setter = getattr(self.text_browser, 'setMarkdown', None)
+        except Exception:
+            setter = None
+        if callable(setter):
+            setter(text)
+        else:
+            self.text_browser.setHtml(self._to_html(text))
+        self.text_browser.setFrameStyle(QFrame.NoFrame)
+        layout.addWidget(self.text_browser)
+
+        # Optionaler aufklappbarer Tool-Trace
+        self.trace_widget = None
+        if tool_trace:
+            toggle_row = QHBoxLayout()
+            self.toggle_button = QToolButton(self)
+            self.toggle_button.setText('Tool-Details anzeigen')
+            self.toggle_button.setCheckable(True)
+            self.toggle_button.toggled.connect(self._toggle_trace)
+            toggle_row.addWidget(self.toggle_button)
+            toggle_row.addStretch(1)
+            layout.addLayout(toggle_row)
+
+            self.trace_widget = QTextEdit(self)
+            self.trace_widget.setReadOnly(True)
+            self.trace_widget.setPlainText(tool_trace)
+            self.trace_widget.setVisible(False)
+            self.trace_widget.setStyleSheet('font-size: 10px; color: #555;')
+            layout.addWidget(self.trace_widget)
+
+    def _role_label(self) -> str:
+        if self.role == 'user':
+            return 'Du'
+        if self.role == 'ai':
+            return 'AI'
+        if self.role == 'system':
+            return 'System'
+        if self.role == 'debug':
+            return 'Debug'
+        return self.role
+
+    def _role_style(self) -> str:
+        if self.role == 'user':
+            return 'font-weight: bold; color: #0055aa;'
+        if self.role == 'ai':
+            return 'font-weight: bold; color: #228822;'
+        if self.role == 'system':
+            return 'font-weight: bold; color: #aa5500;'
+        if self.role == 'debug':
+            return 'font-weight: bold; color: #777777;'
+        return 'font-weight: bold;'
+
+    def _to_html(self, text: str) -> str:
+        """Sehr einfacher Markdown-zu-HTML-Fallback fuer Umgebungen ohne setMarkdown."""
+        escaped = (
+            text.replace('&', '&amp;')
+            .replace('<', '&lt;')
+            .replace('>', '&gt;')
+        )
+        # Zeilenumbrueche in <br> umsetzen, damit die Struktur lesbar bleibt
+        escaped = escaped.replace('\n', '<br/>')
+        html = '<div style="white-space: normal;">%s</div>' % escaped
+        return html
+
+    def _toggle_trace(self, checked: bool):
+        if self.trace_widget is not None:
+            self.trace_widget.setVisible(checked)
+            self.toggle_button.setText('Tool-Details verbergen' if checked else 'Tool-Details anzeigen')
+
+
+class ChatPanel(QWidget):
+    """Scrollbares Chatpanel mit einzelnen ChatMessageWidgets."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.scroll = QScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        layout.addWidget(self.scroll)
+
+        container = QWidget(self.scroll)
+        self.messages_layout = QVBoxLayout(container)
+        self.messages_layout.setContentsMargins(4, 4, 4, 4)
+        self.messages_layout.setSpacing(6)
+        self.messages_layout.addStretch(1)
+
+        self.scroll.setWidget(container)
+
+    def add_message(self, role: str, text: str, tool_trace: str | None = None):
+        widget = ChatMessageWidget(role=role, text=text, tool_trace=tool_trace, parent=self)
+        # Stretch am Ende entfernen, Nachricht einfuegen, Stretch wieder anfuegen
+        count = self.messages_layout.count()
+        if count > 0:
+            last_item = self.messages_layout.itemAt(count - 1)
+            if last_item is not None and last_item.spacerItem() is not None:
+                self.messages_layout.removeItem(last_item)
+        self.messages_layout.addWidget(widget)
+        self.messages_layout.addStretch(1)
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def add_user_message(self, text: str):
+        self.add_message('user', text)
+
+    def add_ai_message(self, text: str, tool_trace: str | None = None):
+        self.add_message('ai', text, tool_trace=tool_trace)
+
+    def add_system_message(self, text: str):
+        self.add_message('system', text)
+
+    def add_debug_message(self, text: str):
+        self.add_message('debug', text)
+
+    def clear(self):
+        # Alle Nachrichten entfernen
+        while self.messages_layout.count() > 0:
+            item = self.messages_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+        self.messages_layout.addStretch(1)
+
+    def _scroll_to_bottom(self):
+        bar = self.scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
 
 
 class MCPServerRechercheDialog(QDialog):
@@ -95,10 +255,9 @@ class MCPServerRechercheDialog(QDialog):
         main_layout.addWidget(self.conn_label)
 
         # --- Chat view -----------------------------------------------------
-        self.chat_view = QTextEdit(self)
-        self.chat_view.setReadOnly(True)
-        # Spaeter koennen wir hier HTML/Markdown anzeigen; derzeit einfache Plain-Append.
-        main_layout.addWidget(self.chat_view)
+        # Altes QTextEdit durch ein flexibleres ChatPanel ersetzen
+        self.chat_panel = ChatPanel(self)
+        main_layout.addWidget(self.chat_panel)
 
         # --- Input row -----------------------------------------------------
         input_row = QHBoxLayout()
@@ -178,20 +337,20 @@ class MCPServerRechercheDialog(QDialog):
             library_path = library_override
             source = 'prefs'
         if not library_path:
-            self.chat_view.append(
-                'System: Kein Calibre-Bibliothekspfad konfiguriert und keine aktuelle Bibliothek gefunden.'
+            self.chat_panel.add_system_message(
+                'Kein Calibre-Bibliothekspfad konfiguriert und keine aktuelle Bibliothek gefunden.'
             )
             return
 
         if self.server_running and self.server_process and self.server_process.poll() is None:
-            self.chat_view.append('System: MCP Server laeuft bereits.')
+            self.chat_panel.add_system_message('MCP Server laeuft bereits.')
             return
 
         try:
             python_cmd = self._python_executable()
         except RuntimeError as exc:
             log.error("No usable Python interpreter: %s", exc)
-            self.chat_view.append(f'System: {exc}')
+            self.chat_panel.add_system_message(f'System: {exc}')
             return
 
         env = os.environ.copy()
@@ -220,13 +379,13 @@ class MCPServerRechercheDialog(QDialog):
             )
         except OSError as exc:
             log.exception("Failed to start MCP server process")
-            self.chat_view.append(f'System: MCP Server konnte nicht starten: {exc}')
+            self.chat_panel.add_system_message(f'MCP Server konnte nicht starten: {exc}')
             self.server_process = None
             return
 
         self.server_running = True
         self.server_button.setText('Server stoppen')
-        self.chat_view.append(f'System: MCP Server gestartet auf ws://{host}:{port}.')
+        self.chat_panel.add_system_message(f'MCP Server gestartet auf ws://{host}:{port}.')
         self.server_monitor.start()
 
     def _stop_server(self):
@@ -236,7 +395,7 @@ class MCPServerRechercheDialog(QDialog):
             self.server_running = False
             self.server_button.setText('Server starten')
             self.server_monitor.stop()
-            self.chat_view.append('System: MCP Server wurde gestoppt.')
+            self.chat_panel.add_system_message('MCP Server wurde gestoppt.')
             return
 
         try:
@@ -260,14 +419,14 @@ class MCPServerRechercheDialog(QDialog):
             log.exception("Failed to read server output on stop: %s", exc)
 
         if stderr:
-            self.chat_view.append(f'stderr: {stderr.strip()[:500]}')
+            self.chat_panel.add_system_message(f'stderr: {stderr.strip()[:500]}')
         if stdout:
-            self.chat_view.append(f'stdout: {stdout.strip()[:500]}')
+            self.chat_panel.add_system_message(f'stdout: {stdout.strip()[:500]}')
 
         self.server_running = False
         self.server_button.setText('Server starten')
         self.server_monitor.stop()
-        self.chat_view.append('System: MCP Server wurde gestoppt.')
+        self.chat_panel.add_system_message('MCP Server wurde gestoppt.')
 
     def _monitor_server(self):
         proc = self.server_process
@@ -303,7 +462,7 @@ class MCPServerRechercheDialog(QDialog):
         else:
             msg = 'System: MCP Server wurde normal beendet.'
 
-        self.chat_view.append(msg)
+        self.chat_panel.add_system_message(msg)
         self.server_process = None
         self.server_running = False
         self.server_button.setText('Server starten')
@@ -317,10 +476,10 @@ class MCPServerRechercheDialog(QDialog):
 
     def new_chat(self):
         """Loesche aktuellen Chatverlauf und setze Agent-Session zurueck."""
-        self.chat_view.clear()
+        self.chat_panel.clear()
         # Agent besitzt Session-Zustand (z. B. letzte Frage/ Treffer); durch Neuinstanzierung zuruecksetzen
         self.agent = RechercheAgent(prefs, trace_callback=self._append_trace)
-        self.chat_view.append('System: Neuer Chat gestartet.')
+        self.chat_panel.add_system_message('Neuer Chat gestartet.')
 
     def send_message(self):
         if self.pending_request:
@@ -330,8 +489,7 @@ class MCPServerRechercheDialog(QDialog):
         if not text:
             return
 
-        # Einfache Markdown-artige Darstellung: Nutzer fett markieren
-        self.chat_view.append(f'**Du:** {text}')
+        self.chat_panel.add_user_message(text)
         self.input_edit.clear()
         self._toggle_send_state(True)
 
@@ -339,23 +497,29 @@ class MCPServerRechercheDialog(QDialog):
 
     def _process_chat(self, text: str):
         try:
-            # Zwischenstatus: Recherche startet
-            self.chat_view.append('_System: Starte Recherche uebers MCP-Backend ..._')
+            self.chat_panel.add_system_message('Starte Recherche uebers MCP-Backend ...')
 
             response = self.agent.answer_question(text)
         except Exception as exc:
             log.exception("Research agent failed")
-            self.chat_view.append(f'**System:** Fehler in der Recherche-Pipeline: {exc}')
+            self.chat_panel.add_system_message(f'Fehler in der Recherche-Pipeline: {exc}')
         else:
             if response:
-                # Trennstrich
-                self.chat_view.append('---')
-                # Antwort als Markdown-artiger Block anzeigen
-                self.chat_view.append(f'**AI:**\n{response}')
+                self.chat_panel.add_ai_message(response)
             else:
-                self.chat_view.append('**System:** Keine Antwort vom Provider erhalten.')
+                self.chat_panel.add_system_message('Keine Antwort vom Provider erhalten.')
         finally:
             self._toggle_send_state(False)
+
+    def _append_trace(self, message: str):
+        """Trace-Callback fuer den Agenten: Debug-Ausgaben ins Chatpanel schreiben.
+
+        Aktuell werden die Traces als separate Debug-Nachrichten angezeigt.
+        In einem spaeteren Schritt koennen wir diese Nachrichten pro AI-Antwort
+        sammeln und als aufklappbare Tool-Details an add_ai_message() uebergeben.
+        """
+        if self.debug_checkbox.isChecked():
+            self.chat_panel.add_debug_message(message)
 
     def _toggle_send_state(self, busy: bool):
         self.pending_request = busy
@@ -432,14 +596,6 @@ class MCPServerRechercheDialog(QDialog):
         chosen = candidates[0]
         log.info("Auto-detected Python executable: %s", chosen)
         return chosen
-
-    def _append_trace(self, line: str) -> None:
-        """Optional Tool-/MCP-Trace in das Chatfenster schreiben."""
-        if not getattr(self, 'debug_checkbox', None):
-            return
-        if not self.debug_checkbox.isChecked():
-            return
-        self.chat_view.append(f'DEBUG: {line}')
 
 def create_dialog(gui, icon, do_user_config):
     d = MCPServerRechercheDialog(gui, icon, do_user_config)
