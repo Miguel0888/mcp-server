@@ -1,14 +1,45 @@
 import sys
-from pathlib import Path
-
-PLUGIN_DIR = Path(__file__).resolve().parent
-SITE_PACKAGES = PLUGIN_DIR / 'site-packages'
-if SITE_PACKAGES.exists():
-    sys.path.insert(0, str(SITE_PACKAGES))
-
 import asyncio
 import threading
+from pathlib import Path
 from typing import Optional
+import pkgutil
+
+
+def _bootstrap_site_packages() -> None:
+    """Ensure that bundled site-packages are importable in dev and ZIP mode."""
+    plugin_file = Path(__file__).resolve()
+    plugin_dir = plugin_file.parent
+
+    # 1) Dev/entpacktes Plugin: <plugin_dir>/site-packages als echter Ordner
+    site_dir = plugin_dir / "site-packages"
+    if site_dir.is_dir():
+        site_str = str(site_dir)
+        if site_str not in sys.path:
+            sys.path.insert(0, site_str)
+        return
+
+    # 2) ZIP-Plugin: __file__ zeigt auf ...mcp_server_recherche.zip/...
+    #    Hier hilft entweder der Loader (archive) oder ein String-Split auf ".zip".
+    zip_path = None
+
+    loader = pkgutil.get_loader(__name__)
+    archive = getattr(loader, "archive", None)
+    if archive and archive.lower().endswith(".zip"):
+        zip_path = archive
+    else:
+        file_str = str(plugin_file)
+        if ".zip" in file_str:
+            zip_path = file_str.split(".zip", 1)[0] + ".zip"
+
+    if zip_path:
+        zip_site = zip_path + "/site-packages"
+        if zip_site not in sys.path:
+            # Do not check os.path.exists here – this is a logical ZIP-subdir path
+            sys.path.insert(0, zip_site)
+
+
+_bootstrap_site_packages()
 
 
 class MCPServerThread(threading.Thread):
@@ -33,7 +64,7 @@ class MCPServerThread(threading.Thread):
             from calibre_mcp_server.config_loader import ServerConfig
             from calibre_mcp_server.websocket_server import MCPWebSocketServer
         except ModuleNotFoundError as exc:  # pylint: disable=broad-except
-            missing = exc.name or 'unbekannt'
+            missing = exc.name or "unbekannt"
             self.last_error = (
                 f"Abhaengigkeit '{missing}' fehlt. Bitte websockets/fastmcp in das Plugin "
                 "bundle oder in Calibre installieren."
@@ -64,7 +95,7 @@ class MCPServerThread(threading.Thread):
             try:
                 if self.loop and self.loop.is_running():
                     self.loop.stop()
-            except Exception:  # pragma: no cover
+            except Exception:
                 pass
             if self.loop:
                 self.loop.close()
