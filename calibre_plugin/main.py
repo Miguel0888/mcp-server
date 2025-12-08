@@ -93,9 +93,12 @@ class MCPServerRechercheDialog(QDialog):
         self.input_edit.setPlaceholderText(
             'Frage oder Suchtext fuer die MCP-Recherche eingeben ...'
         )
+        self.input_edit.returnPressed.connect(self.send_message)
         input_row.addWidget(self.input_edit)
 
         self.send_button = QPushButton('Senden', self)
+        self.send_button.setDefault(True)
+        self.send_button.setAutoDefault(True)
         self.send_button.clicked.connect(self.send_message)
         input_row.addWidget(self.send_button)
 
