@@ -111,14 +111,31 @@ class RechercheAgent(object):
                     # Runde 1: einfache, breit gefasste Kernbegriffe ohne
                     # komplexe Planner-Logik. Hier nutzen wir nur den
                     # Schlagwort-Extractor auf der effektiven Frage und
-                    # bauen eine Basisquery daraus.
+                    # bauen daraus mehrere einfache Queries.
                     core_keywords = self._extract_keywords(effective_question)
                     if not core_keywords:
                         core_keywords = [effective_question]
-                    # Fuer Runde 1 zwingen wir einen OR-Operator, um die
-                    # Suchmenge nicht von vornherein zu stark einzuengen.
-                    base_query = " ".join(core_keywords)
-                    queries = [base_query]
+
+                    # Wenn die KI eine einzige Wortliste geliefert hat
+                    # (z. B. "hacking cyberangriffe sicherheit ..."), splitten
+                    # wir diese in Tokens und bauen fuer jedes Token eine
+                    # eigene Query. Das wirkt wie eine OR-Suche ueber
+                    # Einzelbegriffe im FT-Backend und vermeidet zu enge
+                    # Multi-Wort-Phrasen.
+                    queries: List[str] = []
+                    if len(core_keywords) == 1:
+                        first = core_keywords[0]
+                        tokens = [t for t in re.split(r"\s+", first) if t]
+                        if len(tokens) > 1:
+                            for tok in tokens:
+                                if tok not in queries:
+                                    queries.append(tok)
+                        else:
+                            queries = core_keywords[:]  # ein einzelner Begriff
+                    else:
+                        # Mehrere vom LLM gelieferte Phrasen: jede als eigene Query
+                        queries = [q for q in core_keywords if q]
+
                     self._trace_log(f"Suchrunde 1 (Kernbegriffe): {queries!r}")
                 else:
                     # Folge-Runden: Planner/Refinement verwenden, um gezieltere
