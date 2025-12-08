@@ -282,6 +282,7 @@ class MCPServerRechercheDialog(QDialog):
 
         # Debug-Checkbox fuer Tool-Trace
         self.debug_checkbox = QCheckBox('Tool-Details anzeigen', self)
+        self.debug_checkbox.setChecked(True)
         top_row.addWidget(self.debug_checkbox)
 
         top_row.addStretch(1)
@@ -619,10 +620,11 @@ class MCPServerRechercheDialog(QDialog):
                 self._trace_title = text
             self._trace_buffer.append(text)
 
-        # Wenn bereits eine AI-Nachricht gerendert wurde und der Benutzer
-        # den Block geoeffnet hat, aktualisieren wir Inhalt und Titel live.
+        # Wenn bereits eine AI-Nachricht gerendert wurde, aktualisieren wir
+        # Inhalt und Titel live, so dass der aktuelle Step stets sichtbar ist.
         if self._current_ai_message is not None:
             content = "\n".join(self._trace_buffer)
+            # Standardmaessig ist Debug aktiviert, daher verwenden wir den Titel
             title = self._trace_title if self.debug_checkbox.isChecked() else None
             self._current_ai_message.update_trace(title, content)
 
