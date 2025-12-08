@@ -164,15 +164,14 @@ class RechercheAgent(object):
     def _plan_search_queries(self, question: str) -> List[str]:
         """Erzeuge Suchabfragen fuer die Volltextsuchen.
 
-        Wenn use_llm_query_planning aktiviert ist, wird ausschliesslich der LLM
-        fuer die Generierung von Suchphrasen und Schlagwort-Queries genutzt.
-        Dabei werden aktuelle und – falls vorhanden – vorherige Fragen als
-        Kontext uebergeben, so dass der LLM aehnliche Begriffe und sinnvolle
-        Suchmaschinen-Phrasen ableiten kann. Der Agent selbst filtert keine
-        Stopwoerter hart; die Relevanzentscheidung trifft die KI.
+        Kombination aus heuristischer Basissuche und LLM-geplanter Query-Liste:
+        - Aus der (effektiven) Frage wird immer eine robuste Keyword-Query gebaut,
+          z. B. "fahrzeug AND bussysteme".
+        - Optional werden vom LLM vorgeschlagene Suchanfragen ergaenzend
+          hinzugefuegt (Synonyme, verwandte Begriffe etc.).
         """
         use_llm = bool(self.prefs.get('use_llm_query_planning', True))
-        raw_queries: List[str] = []
+        llm_queries: List[str] = []
 
         # Kontext fuer den Planner aufbauen: aktuelle + vorherige Frage
         context_lines: List[str] = []
@@ -198,7 +197,7 @@ class RechercheAgent(object):
                 "- Extrahiere und kombiniere nur die wichtigsten Fachbegriffe, Abkuerzungen und Synonyme.\n"
                 "- Du darfst bei Bedarf boolsche Operatoren AND/OR nutzen, aber keine komplexen Ausdruecke.\n"
                 "- Jede Zeile soll eine eigenstaendige Suchanfrage sein (wie bei einer Suchmaschine).\n"
-                "- Vermeide Hoeflichkeitsfloskeln und Funktionsverben (z. B. 'erkläre', 'sag mir', 'bitte').\n"
+                "- Vermeide Hoeflichkeitsfloskeln und Funktionsverben (z. B. 'erklaere', 'sag mir', 'bitte').\n"
                 "- Nutze gegebenenfalls auch anderssprachige Fachbegriffe, wenn diese ueblich sind.\n"
                 f"{hint_block}\n\n"
                 f"KONTEXT:\n{context_text}\n\n"
@@ -207,33 +206,69 @@ class RechercheAgent(object):
 
             try:
                 response = self.chat_client.send_chat(planning_prompt)
-                raw_queries = self._extract_queries(response)
+                llm_queries = [q.strip() for q in self._extract_queries(response) if q.strip()]
             except Exception as exc:  # noqa: BLE001 - fallback zu heuristischer Suche
                 log.warning("LLM-Query-Planung fehlgeschlagen: %s", exc)
-                raw_queries = []
+                llm_queries = []
 
-        # Fallback: wenn der LLM nichts geliefert hat, benutze die Frage direkt
-        if not raw_queries:
-            raw_queries = [question]
+        # 1) Robuste Keyword-basierte Query aus der (effektiven) Frage
+        keywords = self._extract_keywords(question)
+        base_query = self._keywords_to_query(keywords) if keywords else ""
 
-        raw_queries = [q.strip() for q in raw_queries if q.strip()]
-        raw_queries = raw_queries[: self.max_query_variants]
+        queries: List[str] = []
+        if base_query:
+            queries.append(base_query)
 
-        log.info("Geplante Volltext-Queries: %r", raw_queries)
-        self._trace_log(f"Geplante Volltext-Queries: {raw_queries!r}")
-        return raw_queries
+        # 2) Vom LLM gelieferte Queries ergaenzend aufnehmen
+        for q in llm_queries:
+            if q and q not in queries:
+                queries.append(q)
+
+        # 3) Fallback, falls weder Keywords noch LLM etwas liefern
+        if not queries:
+            queries = [question]
+
+        queries = queries[: self.max_query_variants]
+
+        log.info("Geplante Volltext-Queries: %r", queries)
+        self._trace_log(f"Geplante Volltext-Queries: {queries!r}")
+        return queries
 
     def _extract_keywords(self, text: str) -> List[str]:
-        """Legacy-Hilfsfunktion (derzeit nicht aktiv genutzt).
+        """Einfache Schlagwort-Extraktion fuer Volltextsuchen.
 
-        Die eigentliche Entscheidung, welche Begriffe relevant sind, trifft
-        der LLM in der Query-Planung. Diese Methode bleibt fuer spaetere,
-        optional heuristische Pfade erhalten, wird aber im Standardpfad
-        nicht verwendet.
+        - Kleinbuchstaben
+        - nicht alphanumerische Zeichen zu Leerzeichen
+        - sehr knapper Stoppwortfilter (de/en Funktionswoerter)
+        - Laengenfilter (>= 3 Zeichen)
+        - Limit aus prefs (max_search_keywords)
         """
         if not text:
             return []
-        return []
+
+        max_kws = int(self.prefs.get('max_search_keywords', 5))
+        cleaned = re.sub(r"[^\wäöüÄÖÜß]+", " ", text.lower())
+        tokens = [t.strip() for t in cleaned.split() if t.strip()]
+
+        stopwords = {
+            'und', 'oder', 'der', 'die', 'das', 'ein', 'eine', 'einer', 'eines',
+            'ist', 'sind', 'was', 'wie', 'warum', 'welche', 'welcher', 'welches',
+            'gibt', 'es', 'zu', 'im', 'in', 'am', 'an', 'den', 'dem', 'des',
+            'the', 'a', 'an', 'of', 'for', 'to', 'on', 'in', 'and', 'or',
+        }
+
+        keywords: List[str] = []
+        for tok in tokens:
+            if len(tok) < 3:
+                continue
+            if tok in stopwords:
+                continue
+            if tok not in keywords:
+                keywords.append(tok)
+            if len(keywords) >= max_kws:
+                break
+
+        return keywords
 
     # ------------------ Search plan execution ------------------
 
