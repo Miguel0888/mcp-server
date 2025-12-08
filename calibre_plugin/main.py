@@ -32,6 +32,8 @@ from qt.core import (
 
 from calibre_plugins.mcp_server_recherche.config import prefs
 from calibre_plugins.mcp_server_recherche.provider_client import ChatProviderClient
+from calibre_plugins.mcp_server_recherche.recherche_agent import RechercheAgent
+
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +51,7 @@ class MCPServerRechercheDialog(QDialog):
 
         self.server_running = False
         self.server_process: subprocess.Popen | None = None
-        self.chat_client = ChatProviderClient(prefs)
+        self.agent = RechercheAgent(prefs)
         self.pending_request = False
 
         self.server_monitor = QTimer(self)
@@ -301,20 +303,23 @@ class MCPServerRechercheDialog(QDialog):
     def send_message(self):
         if self.pending_request:
             return
+
         text = self.input_edit.text().strip()
         if not text:
             return
+
         self.chat_view.append(f'Du: {text}')
         self.input_edit.clear()
         self._toggle_send_state(True)
+
         QTimer.singleShot(0, lambda: self._process_chat(text))
 
     def _process_chat(self, text: str):
         try:
-            response = self.chat_client.send_chat(text)
+            response = self.agent.answer_question(text)
         except Exception as exc:
-            log.exception("Chat request failed")
-            self.chat_view.append(f'System: Fehler beim Chat-Request: {exc}')
+            log.exception("Research agent failed")
+            self.chat_view.append(f'System: Fehler in der Recherche-Pipeline: {exc}')
         else:
             if response:
                 self.chat_view.append(f'AI: {response}')
