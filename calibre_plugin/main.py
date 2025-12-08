@@ -118,7 +118,6 @@ class ChatMessageWidget(QFrame):
             self.trace_widget.setVisible(False)
             self.trace_widget.setStyleSheet('font-size: 10px; color: #555;')
             self.trace_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
-            self.trace_widget.setFixedHeight(120)
             layout.addWidget(self.trace_widget)
 
     def update_trace(self, title: str | None, content: str):
@@ -184,11 +183,14 @@ class ChatPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.scroll = QScrollArea(self)
+        # Wichtiger Punkt: das innere Widget bestimmt seine Groesse selbst,
+        # wir wollen, dass jede Chat-Box nur so hoch ist wie ihr Inhalt.
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         layout.addWidget(self.scroll)
 
         container = QWidget(self.scroll)
+        container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.messages_layout = QVBoxLayout(container)
         self.messages_layout.setContentsMargins(4, 4, 4, 4)
         self.messages_layout.setSpacing(8)
@@ -196,7 +198,7 @@ class ChatPanel(QWidget):
 
         self.scroll.setWidget(container)
 
-    def add_message(self, role: str, text: str, tool_trace: str | None = None):
+    def add_message(self, role: str, text: str, tool_trace: str | None = None) -> ChatMessageWidget:
         widget = ChatMessageWidget(role=role, text=text, tool_trace=tool_trace, parent=self)
         # Stretch am Ende entfernen, Nachricht einfuegen, Stretch wieder anfuegen
         count = self.messages_layout.count()
@@ -207,18 +209,19 @@ class ChatPanel(QWidget):
         self.messages_layout.addWidget(widget)
         self.messages_layout.addStretch(1)
         QTimer.singleShot(0, self._scroll_to_bottom)
+        return widget
 
-    def add_user_message(self, text: str):
-        self.add_message('user', text)
+    def add_user_message(self, text: str) -> ChatMessageWidget:
+        return self.add_message('user', text)
 
-    def add_ai_message(self, text: str, tool_trace: str | None = None):
-        self.add_message('ai', text, tool_trace=tool_trace)
+    def add_ai_message(self, text: str, tool_trace: str | None = None) -> ChatMessageWidget:
+        return self.add_message('ai', text, tool_trace=tool_trace)
 
-    def add_system_message(self, text: str):
-        self.add_message('system', text)
+    def add_system_message(self, text: str) -> ChatMessageWidget:
+        return self.add_message('system', text)
 
-    def add_debug_message(self, text: str):
-        self.add_message('debug', text)
+    def add_debug_message(self, text: str) -> ChatMessageWidget:
+        return self.add_message('debug', text)
 
     def clear(self):
         # Alle Nachrichten entfernen
@@ -588,18 +591,13 @@ class MCPServerRechercheDialog(QDialog):
             self._enqueue_status(f'Fehler in der Recherche-Pipeline: {exc}')
         else:
             if response:
-                # Beim ersten Rendern der AI-Antwort das zugehoerige MessageWidget merken
                 tool_trace = "\n".join(self._trace_buffer) if self._trace_buffer else None
-                self.chat_panel.add_ai_message(response, tool_trace=tool_trace)
-                # Letzte hinzugefuegte Nachricht ist unsere aktuelle AI-Nachricht
-                if self.chat_panel.messages_layout.count() >= 2:
-                    item = self.chat_panel.messages_layout.itemAt(self.chat_panel.messages_layout.count() - 2)
-                    widget = item.widget() if item is not None else None
-                    if isinstance(widget, ChatMessageWidget):
-                        self._current_ai_message = widget
-                        # Initialen Titel setzen (falls vorhanden)
-                        if self._trace_title:
-                            widget.update_trace(self._trace_title, tool_trace or '')
+                # Das konkrete ChatMessageWidget fuer diese AI-Antwort holen,
+                # statt spaeter ueber das Layout zu raten.
+                ai_widget = self.chat_panel.add_ai_message(response, tool_trace=tool_trace)
+                self._current_ai_message = ai_widget
+                if self._trace_title and tool_trace is not None:
+                    ai_widget.update_trace(self._trace_title, tool_trace)
             else:
                 self._enqueue_status('Keine Antwort vom Provider erhalten.')
         finally:
@@ -613,19 +611,17 @@ class MCPServerRechercheDialog(QDialog):
         aendern und verschwindet, sobald der Step abgeschlossen ist;
         der Pfeil zum Aufklappen bleibt jedoch erhalten.
         """
-        # Heuristik: erste Debug-Zeile als aktueller Titel verwenden,
-        # spaetere Zeilen werden nur in den Inhalt aufgenommen.
-        text = message.strip()
+        text = (message or '').strip()
         if text:
             if self._trace_title is None:
                 self._trace_title = text
             self._trace_buffer.append(text)
 
-        # Wenn bereits eine AI-Nachricht gerendert wurde, aktualisieren wir
-        # Inhalt und Titel live, so dass der aktuelle Step stets sichtbar ist.
+        # Live-Update der aktuell sichtbaren AI-Antwort – wenn sie schon
+        # gerendert ist. Vor Fertigstellung der Antwort werden die Traces
+        # nur gepuffert und dann in _process_chat gesetzt.
         if self._current_ai_message is not None:
             content = "\n".join(self._trace_buffer)
-            # Standardmaessig ist Debug aktiviert, daher verwenden wir den Titel
             title = self._trace_title if self.debug_checkbox.isChecked() else None
             self._current_ai_message.update_trace(title, content)
 
