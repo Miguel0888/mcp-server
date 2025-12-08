@@ -1079,32 +1079,45 @@ class MCPServerRechercheDialog(QDialog):
         self.sources_layout.addStretch(1)
 
     def _toggle_mark_book(self, book_id: int | None, checked: bool) -> None:
-        """Buch im Calibre-Hauptfenster markieren oder entmarkieren.
+        """Toggle marked:true state for a single book in calibre.
 
-        Verwendet die offizielle marked:true-Mechanik von Calibre:
-        - Alle aktuell markierten IDs werden ueber db.set_marked_ids verwaltet.
-        - Wichtig: bestehende Markierungen werden NICHT geloescht, sondern nur
-          um das eine Buch ergaenzt bzw. um dieses eine Buch reduziert.
+        Use add_marked_ids/remove_marked_ids when available to avoid
+        overwriting other marked books or custom mark names.
         """
         if book_id is None:
             return
         try:
             db = self.db
-            current = set(getattr(db, 'marked_ids', []) or [])
+            bid = int(book_id)
+
+            # Prefer new API if available (Calibre >= 6)
+            add_marked = getattr(db, "add_marked_ids", None)
+            remove_marked = getattr(db, "remove_marked_ids", None)
+
             if checked:
-                current.add(int(book_id))
+                if callable(add_marked):
+                    # Add this id to the existing marked:true set
+                    add_marked({bid})
+                else:
+                    # Fallback for older calibre: read current set and extend
+                    current = set(getattr(db, "marked_ids", []) or [])
+                    current.add(bid)
+                    db.set_marked_ids(current)
             else:
-                current.discard(int(book_id))
-            # Nur die geaenderte Menge zurueckschreiben; andere Markierungen bleiben bestehen
-            db.set_marked_ids(current)
+                if callable(remove_marked):
+                    # Remove this id from the existing marked:true set
+                    remove_marked({bid})
+                else:
+                    # Fallback: read current set, remove id, write back
+                    current = set(getattr(db, "marked_ids", []) or [])
+                    current.discard(bid)
+                    db.set_marked_ids(current)
 
-            # Optional: Suche auf marked:true setzen, wenn es mindestens eine Markierung gibt
+            # Optional: update search to show all marked books
             try:
-                if current:
-                    self.gui.search.setEditText('marked:true')
-                    self.gui.search.do_search()
+                self.gui.search.setEditText("marked:true")
+                self.gui.search.do_search()
             except Exception:
-                log.exception('Konnte Suche marked:true nicht aktualisieren')
+                log.exception("Konnte Suche marked:true nicht aktualisieren")
         except Exception:
-            log.exception('Failed to toggle marked state for book_id=%r', book_id)
-
+            log.exception("Failed to toggle marked state for book_id=%r", book_id)
