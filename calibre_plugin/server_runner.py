@@ -4,23 +4,14 @@ import threading
 from pathlib import Path
 from typing import Optional
 import pkgutil
-import zipfile
-import tempfile
 
 
-def _ensure_site_packages_on_path() -> None:
-    """
-    Make sure that 'site-packages' from the plugin is importable.
-
-    - Im Dev-Modus (entpackt): <plugin_dir>/site-packages
-    - Im ZIP-Modus: site-packages/* aus dem ZIP nach temp entpacken
-      und diesen Temp-Ordner auf sys.path legen (inkl. nativer Extensions
-      wie pydantic_core._pydantic_core).
-    """
+def _bootstrap_site_packages() -> None:
+    """Ensure that bundled site-packages are importable in dev and ZIP mode."""
     plugin_file = Path(__file__).resolve()
     plugin_dir = plugin_file.parent
 
-    # 1) Entpackter/Dev-Modus: normaler Ordner
+    # 1) Dev/entpacktes Plugin: <plugin_dir>/site-packages als echter Ordner
     site_dir = plugin_dir / "site-packages"
     if site_dir.is_dir():
         site_str = str(site_dir)
@@ -29,6 +20,7 @@ def _ensure_site_packages_on_path() -> None:
         return
 
     # 2) ZIP-Plugin: __file__ zeigt auf ...mcp_server_recherche.zip/...
+    #    Hier hilft entweder der Loader (archive) oder ein String-Split auf ".zip".
     zip_path = None
 
     loader = pkgutil.get_loader(__name__)
@@ -40,39 +32,14 @@ def _ensure_site_packages_on_path() -> None:
         if ".zip" in file_str:
             zip_path = file_str.split(".zip", 1)[0] + ".zip"
 
-    if not zip_path:
-        return
-
-    try:
-        with zipfile.ZipFile(zip_path) as zf:
-            members = [n for n in zf.namelist() if n.startswith("site-packages/")]
-            if not members:
-                return
-
-            tmp_root = Path(tempfile.mkdtemp(prefix="mcp_site_"))
-
-            for name in members:
-                rel = name[len("site-packages/"):]
-                if not rel:
-                    continue
-                target = tmp_root / rel
-                if name.endswith("/"):
-                    target.mkdir(parents=True, exist_ok=True)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(name) as src, open(target, "wb") as dst:
-                        dst.write(src.read())
-
-            tmp_str = str(tmp_root)
-            if tmp_str not in sys.path:
-                sys.path.insert(0, tmp_str)
-    except Exception:
-        # Im Fehlerfall nichts tun – dann muss evtl. ein global installiertes
-        # websockets/fastmcp/pydantic_core einspringen.
-        return
+    if zip_path:
+        zip_site = zip_path + "/site-packages"
+        if zip_site not in sys.path:
+            # Do not check os.path.exists here – this is a logical ZIP-subdir path
+            sys.path.insert(0, zip_site)
 
 
-_ensure_site_packages_on_path()
+_bootstrap_site_packages()
 
 
 class MCPServerThread(threading.Thread):
