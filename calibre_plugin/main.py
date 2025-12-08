@@ -1001,20 +1001,24 @@ class MCPServerRechercheDialog(QDialog):
             mark_btn = QToolButton(container)
             mark_btn.setCheckable(True)
             mark_btn.setToolTip('Buch in Calibre markieren/entmarkieren (marked:true)')
-            # aktuellen Markierungszustand aus der DB lesen, NICHT zuruecksetzen
+
+            # Korrekt ueber db.data.get_marked lesen, damit mehrere Markierungen bestehen bleiben
             is_marked = False
             if book_id is not None:
                 try:
-                    current_marked = set(getattr(self.db, 'marked_ids', []) or [])
-                    is_marked = int(book_id) in current_marked
+                    data = getattr(self.db, 'data', None)
+                    if data is not None and hasattr(data, 'get_marked'):
+                        is_marked = bool(data.get_marked(book_id))
+                    else:
+                        current_marked = set(getattr(self.db, 'marked_ids', []) or [])
+                        is_marked = int(book_id) in current_marked
                 except Exception:
                     log.exception('Konnte aktuellen Markierungszustand nicht lesen')
+
             mark_btn.setChecked(is_marked)
             mark_btn.setText('★' if is_marked else '☆')
 
             def _on_mark_toggled(checked: bool, bid=book_id, btn=mark_btn):
-                # Button-Zustand visuell anpassen und DB-Markierung erweitern/entfernen,
-                # ohne andere Markierungen zu loeschen.
                 btn.setText('★' if checked else '☆')
                 self._toggle_mark_book(bid, checked)
 
@@ -1037,56 +1041,83 @@ class MCPServerRechercheDialog(QDialog):
             # Excerpt-Zeile direkt unter dem Header: Pfeil links, Text rechts
             excerpt_full = (hit.get('excerpt') or '').strip()
             if excerpt_full:
-                # Kurzfassung: nur wenige Zeilen anzeigen
+                # Echte Vorschau kuerzen und mit Ellipsis versehen
+                max_preview_chars = 220
                 lines = excerpt_full.splitlines()
-                preview_text = '\n'.join(lines[:3]).strip()
-                if not preview_text:
-                    preview_text = excerpt_full[:200].strip()
+                if lines:
+                    base_preview = '\n'.join(lines[:3]).strip()
+                else:
+                    base_preview = excerpt_full
+                if not base_preview:
+                    base_preview = excerpt_full
+
+                preview_text = base_preview
+                if len(preview_text) > max_preview_chars:
+                    cut = preview_text[:max_preview_chars]
+                    last_space = cut.rfind(' ')
+                    if last_space > 0:
+                        cut = cut[:last_space]
+                    preview_text = cut.rstrip() + ' …'
+
+                # Nur collapsible machen, wenn der Volltext wirklich laenger ist
+                is_collapsible = len(excerpt_full) > len(preview_text) + 5
 
                 excerpt_row = QHBoxLayout()
                 excerpt_row.setContentsMargins(0, 0, 0, 0)
                 excerpt_row.setSpacing(4)
 
-                toggle_btn = QToolButton(container)
-                toggle_btn.setCheckable(True)
-                toggle_btn.setArrowType(Qt.RightArrow)
-                toggle_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
-                toggle_btn.setToolTip('Auszug ein- bzw. ausblenden')
-                excerpt_row.addWidget(toggle_btn, 0, Qt.AlignTop)
+                toggle_btn = None
+                if is_collapsible:
+                    toggle_btn = QToolButton(container)
+                    toggle_btn.setCheckable(True)
+                    toggle_btn.setArrowType(Qt.RightArrow)
+                    toggle_btn.setToolButtonStyle(QToolButton.ToolButtonIconOnly)
+                    toggle_btn.setToolTip('Auszug ein-/ausklappen')
+                    excerpt_row.addWidget(toggle_btn, 0, Qt.AlignTop)
+                else:
+                    # Platzhalter, damit der Text alignment-maessig unter dem Titel liegt
+                    excerpt_row.addSpacing(16)
 
-                excerpt_label = QLabel(preview_text, container)
+                initial_text = preview_text if is_collapsible else excerpt_full
+
+                excerpt_label = QLabel(initial_text, container)
                 excerpt_label.setStyleSheet('font-size: 10px; color: #555;')
                 excerpt_label.setWordWrap(True)
                 excerpt_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
                 excerpt_row.addWidget(excerpt_label, 1)
                 excerpt_row.addStretch(0)
 
-                def _toggle_excerpt(checked: bool,
-                                    label=excerpt_label,
-                                    btn=toggle_btn,
-                                    full=excerpt_full,
-                                    preview=preview_text,
-                                    row_container=container,
-                                    scroll_content=scroll_widget):
-                    # Beim Oeffnen kompletten Text anzeigen, beim Schliessen wieder Preview.
-                    label.setText(full if checked else preview)
-                    btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+                if is_collapsible and toggle_btn is not None:
 
-                    # Label neu vermessen
-                    label.adjustSize()
-                    label.updateGeometry()
+                    def _toggle_excerpt(
+                        checked: bool,
+                        label=excerpt_label,
+                        btn=toggle_btn,
+                        full=excerpt_full,
+                        preview=preview_text,
+                        row_container=container,
+                        scroll_content=scroll_widget,
+                    ) -> None:
+                        # Toggle zwischen Preview und Volltext
+                        label.setText(full if checked else preview)
+                        btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
 
-                    # Container fuer diesen Treffer neu vermessen
-                    row_container.adjustSize()
-                    row_container.updateGeometry()
+                        # Label neu vermessen
+                        label.adjustSize()
+                        label.updateGeometry()
 
-                    # Auch das Scroll-Content-Widget der Quellen-Neu berechnen,
-                    # damit die ScrollArea die neue Hoehe uebernimmt.
-                    if scroll_content is not None:
-                        scroll_content.adjustSize()
-                        scroll_content.updateGeometry()
+                        # Container fuer diesen Treffer neu vermessen
+                        row_container.adjustSize()
+                        row_container.updateGeometry()
 
-                toggle_btn.toggled.connect(_toggle_excerpt)
+                        # Scroll-Content-Widget aktualisieren, damit die ScrollArea
+                        # die neue Hoehe uebernimmt
+                        if scroll_content is not None:
+                            scroll_content.adjustSize()
+                            scroll_content.updateGeometry()
+
+                    toggle_btn.toggled.connect(_toggle_excerpt)
+
                 vlay.addLayout(excerpt_row)
 
             self.sources_layout.addWidget(container)
@@ -1096,43 +1127,38 @@ class MCPServerRechercheDialog(QDialog):
     def _toggle_mark_book(self, book_id: int | None, checked: bool) -> None:
         """Toggle marked:true state for a single book in calibre.
 
-        Use add_marked_ids/remove_marked_ids when available to avoid
-        overwriting other marked books or custom mark names.
+        Use db.data.marked_ids to avoid overwriting other marks or labels.
         """
         if book_id is None:
             return
         try:
             db = self.db
             bid = int(book_id)
+            data = getattr(db, 'data', None)
 
-            # Prefer new API if available (Calibre >= 6)
-            add_marked = getattr(db, "add_marked_ids", None)
-            remove_marked = getattr(db, "remove_marked_ids", None)
-
-            if checked:
-                if callable(add_marked):
-                    # Add this id to the existing marked:true set
-                    add_marked({bid})
+            if data is not None and hasattr(data, 'marked_ids'):
+                # Newer calibre: marked_ids ist ein Dict {book_id: text_label}
+                mids = dict(getattr(data, 'marked_ids', {}))
+                if checked:
+                    label = mids.get(bid, 'true')
+                    mids[bid] = label
                 else:
-                    # Fallback for older calibre: read current set and extend
-                    current = set(getattr(db, "marked_ids", []) or [])
-                    current.add(bid)
-                    db.set_marked_ids(current)
+                    mids.pop(bid, None)
+                data.set_marked_ids(mids)
             else:
-                if callable(remove_marked):
-                    # Remove this id from the existing marked:true set
-                    remove_marked({bid})
+                # Fallback fuer aeltere Versionen mit einfachem Set
+                current = set(getattr(db, 'marked_ids', []) or [])
+                if checked:
+                    current.add(bid)
                 else:
-                    # Fallback: read current set, remove id, write back
-                    current = set(getattr(db, "marked_ids", []) or [])
                     current.discard(bid)
-                    db.set_marked_ids(current)
+                db.set_marked_ids(current)
 
-            # Optional: update search to show all marked books
+            # Optional: Suche auf marked:true setzen, um alle markierten Buecher zu sehen
             try:
-                self.gui.search.setEditText("marked:true")
+                self.gui.search.setEditText('marked:true')
                 self.gui.search.do_search()
             except Exception:
-                log.exception("Konnte Suche marked:true nicht aktualisieren")
+                log.exception('Konnte Suche marked:true nicht aktualisieren')
         except Exception:
-            log.exception("Failed to toggle marked state for book_id=%r", book_id)
+            log.exception('Failed to toggle marked state for book_id=%r', book_id)
