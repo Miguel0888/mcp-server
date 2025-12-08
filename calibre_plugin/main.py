@@ -32,109 +32,23 @@ from qt.core import (
 
 from calibre_plugins.mcp_server_recherche.config import prefs
 from calibre_plugins.mcp_server_recherche.provider_client import ChatProviderClient
-from calibre_plugins.mcp_server_recherche.server_runner import MCPServerThread
-
 
 log = logging.getLogger(__name__)
 
-def _is_calibre_executable(path):
-    """Return True if executable is likely a calibre launcher."""
-    if not path:
-        return False
-    name = os.path.basename(path).lower()
-    return (
-        name.startswith("calibre-")
-        or name == "calibre.exe"
-        or name == "calibre-debug.exe"
-        or name == "calibre-parallel.exe"
-    )
-
-def _auto_detect_python_executable(override_from_prefs):
-    """Resolve a suitable python executable."""
-    candidates = []
-
-    # Prefer explicit override if vorhanden
-    if override_from_prefs:
-        candidates.append(override_from_prefs)
-
-    is_windows = os.name == "nt"
-
-    if is_windows:
-        # Try Python on PATH
-        candidates.append(shutil.which("python"))
-        candidates.append(shutil.which("python3"))
-
-        # Try py launcher
-        py = shutil.which("py")
-        if py:
-            try:
-                proc = subprocess.Popen(
-                    [py, "-3", "-c", "import sys; print(sys.executable)"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-                out, err = proc.communicate(timeout=5)
-                if proc.returncode == 0:
-                    resolved = (out or "").strip()
-                    candidates.append(resolved)
-                else:
-                    logging.getLogger(__name__).info(
-                        "py launcher returned %s, stderr=%r", proc.returncode, err
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logging.getLogger(__name__).info("py launcher not usable: %s", exc)
-    else:
-        # Unix: prefer python3, then python
-        candidates.append(shutil.which("python3"))
-        candidates.append(shutil.which("python"))
-
-    # Fallback: sys.executable, wenn es kein calibre-Wrapper ist
-    if sys.executable and not _is_calibre_executable(sys.executable):
-        candidates.append(sys.executable)
-
-    # Deduplicate and filter
-    seen = set()
-    valid = []
-    for c in candidates:
-        if not c:
-            continue
-        if c in seen:
-            continue
-        seen.add(c)
-        if not os.path.exists(c):
-            continue
-        if _is_calibre_executable(c):
-            continue
-        valid.append(c)
-
-    if not valid:
-        raise RuntimeError(
-            "Kein geeigneter Python-Interpreter gefunden. "
-            "Bitte in den MCP Server Recherche-Einstellungen den Pfad zu python.exe konfigurieren."
-        )
-
-    chosen = valid[0]
-    logging.getLogger(__name__).info("Auto-detected Python executable: %s", chosen)
-    return chosen
 
 class MCPServerRechercheDialog(QDialog):
-    """Main dialog for MCP Server Recherche (pure UI stub)."""
+    """Main dialog for MCP Server Recherche."""
 
     def __init__(self, gui, icon, do_user_config):
         QDialog.__init__(self, gui)
         self.gui = gui
         self.do_user_config = do_user_config
 
-        # The current database shown in the GUI
-        # db is an instance of the class LibraryDatabase from db/legacy.py
-        # This class has many, many methods that allow you to do a lot of
-        # things. For most purposes you should use db.new_api, which has
-        # a much nicer interface from db/cache.py
+        # Use the current database from the GUI
         self.db = gui.current_db
 
         self.server_running = False
-        self.server_thread: MCPServerThread | None = None
+        self.server_process: subprocess.Popen | None = None
         self.chat_client = ChatProviderClient(prefs)
         self.pending_request = False
 
@@ -170,36 +84,30 @@ class MCPServerRechercheDialog(QDialog):
         # --- Chat view -----------------------------------------------------
         self.chat_view = QTextEdit(self)
         self.chat_view.setReadOnly(True)
-        main_layout.addWidget(self.chat_view, 1)
+        main_layout.addWidget(self.chat_view)
 
-        # --- Bottom row: input + send -------------------------------------
-        bottom_row = QHBoxLayout()
+        # --- Input row -----------------------------------------------------
+        input_row = QHBoxLayout()
 
         self.input_edit = QLineEdit(self)
         self.input_edit.setPlaceholderText(
             'Frage oder Suchtext fuer die MCP-Recherche eingeben ...'
         )
+        input_row.addWidget(self.input_edit)
 
         self.send_button = QPushButton('Senden', self)
         self.send_button.clicked.connect(self.send_message)
+        input_row.addWidget(self.send_button)
 
-        bottom_row.addWidget(self.input_edit, 1)
-        bottom_row.addWidget(self.send_button)
+        main_layout.addLayout(input_row)
 
-        main_layout.addLayout(bottom_row)
-
+        # Window setup
         self.setWindowTitle('MCP Server Recherche')
         self.setWindowIcon(icon)
         self.resize(700, 500)
 
+        # Detect initial library path
         self.calibre_library_path = self._detect_calibre_library()
-        log.info("Detected Calibre library path: %s", self.calibre_library_path)
-
-        self.project_root = Path(__file__).resolve().parents[1]
-        self.plugin_root = Path(__file__).resolve().parent
-        self.server_package = self.plugin_root / 'calibre_mcp_server'
-        self.module_roots = []
-        self.server_cwd = Path.cwd()
         log.info("Detected Calibre library path: %s", self.calibre_library_path)
 
     # ------------------------------------------------------------------ UI
@@ -232,6 +140,8 @@ class MCPServerRechercheDialog(QDialog):
             log.exception("Could not detect calibre library path: %s", exc)
         return path or ""
 
+    # ------------------------------------------------------------------ Server control (external Python)
+
     def _start_server(self):
         host = (prefs['server_host'] or '127.0.0.1').strip() or '127.0.0.1'
         try:
@@ -248,19 +158,50 @@ class MCPServerRechercheDialog(QDialog):
             library_path = library_override
             source = 'prefs'
         if not library_path:
-            self.chat_view.append('System: Kein Calibre-Bibliothekspfad konfiguriert und kein aktuelle Bibliothek gefunden.')
+            self.chat_view.append(
+                'System: Kein Calibre-Bibliothekspfad konfiguriert und keine aktuelle Bibliothek gefunden.'
+            )
             return
 
-        if self.server_thread and self.server_thread.is_running:
+        if self.server_running and self.server_process and self.server_process.poll() is None:
             self.chat_view.append('System: MCP Server laeuft bereits.')
             return
 
-        self.server_thread = MCPServerThread(host, port, library_path)
-        self.server_thread.start()
-        if not self.server_thread.wait_until_started(timeout=3):
-            error = self.server_thread.last_error or 'Unbekannter Fehler'
-            self.chat_view.append(f'System: MCP Server konnte nicht starten: {error}')
-            self.server_thread = None
+        try:
+            python_cmd = self._python_executable()
+        except RuntimeError as exc:
+            log.error("No usable Python interpreter: %s", exc)
+            self.chat_view.append(f'System: {exc}')
+            return
+
+        env = os.environ.copy()
+        env['MCP_SERVER_HOST'] = host
+        env['MCP_SERVER_PORT'] = str(port)
+        env['CALIBRE_LIBRARY_PATH'] = library_path
+
+        cmd = [python_cmd, '-m', 'calibre_mcp_server.websocket_server']
+        log.info(
+            "Starting MCP server: cmd=%r host=%s port=%s library_source=%s library=%r",
+            cmd,
+            host,
+            port,
+            source,
+            library_path,
+        )
+
+        try:
+            self.server_process = subprocess.Popen(
+                cmd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+            )
+        except OSError as exc:
+            log.exception("Failed to start MCP server process")
+            self.chat_view.append(f'System: MCP Server konnte nicht starten: {exc}')
+            self.server_process = None
             return
 
         self.server_running = True
@@ -269,29 +210,90 @@ class MCPServerRechercheDialog(QDialog):
         self.server_monitor.start()
 
     def _stop_server(self):
-        if self.server_thread:
-            self.server_thread.stop()
-            self.server_thread = None
-        self.server_running = False
-        self.server_button.setText('Server starten')
-        self.chat_view.append('System: MCP Server wurde gestoppt.')
-        self.server_monitor.stop()
-
-    def _monitor_server(self):
-        if self.server_thread and not self.server_thread.is_running:
-            error = self.server_thread.last_error
-            self.server_thread = None
+        proc = self.server_process
+        self.server_process = None
+        if not proc:
             self.server_running = False
             self.server_button.setText('Server starten')
-            msg = 'System: MCP Server beendet.'
-            if error:
-                msg += f' Fehler: {error}'
-            self.chat_view.append(msg)
             self.server_monitor.stop()
+            self.chat_view.append('System: MCP Server wurde gestoppt.')
+            return
+
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+        except Exception as exc:
+            log.exception("Failed to terminate MCP server: %s", exc)
+
+        stdout = ''
+        stderr = ''
+        try:
+            if proc.stdout:
+                stdout = proc.stdout.read()
+            if proc.stderr:
+                stderr = proc.stderr.read()
+        except Exception as exc:
+            log.exception("Failed to read server output on stop: %s", exc)
+
+        if stderr:
+            self.chat_view.append(f'stderr: {stderr.strip()[:500]}')
+        if stdout:
+            self.chat_view.append(f'stdout: {stdout.strip()[:500]}')
+
+        self.server_running = False
+        self.server_button.setText('Server starten')
+        self.server_monitor.stop()
+        self.chat_view.append('System: MCP Server wurde gestoppt.')
+
+    def _monitor_server(self):
+        proc = self.server_process
+        if not proc:
+            self.server_monitor.stop()
+            return
+
+        ret = proc.poll()
+        if ret is None:
+            return
+
+        stdout = ''
+        stderr = ''
+        try:
+            if proc.stdout:
+                stdout = proc.stdout.read()
+            if proc.stderr:
+                stderr = proc.stderr.read()
+        except Exception as exc:
+            log.exception("Failed to read server output: %s", exc)
+
+        log.info("MCP server exited with code %s", ret)
+        if stdout:
+            log.info("MCP server stdout:\\n%s", stdout)
+        if stderr:
+            log.info("MCP server stderr:\\n%s", stderr)
+
+        if ret != 0:
+            msg = f'System: MCP Server beendet (Code {ret}).'
+            if stderr:
+                first_line = stderr.strip().splitlines()[0]
+                msg += f'\\n{first_line}'
+        else:
+            msg = 'System: MCP Server wurde normal beendet.'
+
+        self.chat_view.append(msg)
+        self.server_process = None
+        self.server_running = False
+        self.server_button.setText('Server starten')
+        self.server_monitor.stop()
 
     def closeEvent(self, event):
         self._stop_server()
         super().closeEvent(event)
+
+    # ------------------------------------------------------------------ Chat
 
     def send_message(self):
         if self.pending_request:
@@ -307,11 +309,14 @@ class MCPServerRechercheDialog(QDialog):
     def _process_chat(self, text: str):
         try:
             response = self.chat_client.send_chat(text)
-        except Exception as exc:  # noqa: BLE001
-            self.chat_view.append(f'Fehler: {exc}')
+        except Exception as exc:
+            log.exception("Chat request failed")
+            self.chat_view.append(f'System: Fehler beim Chat-Request: {exc}')
         else:
-            self.chat_view.append(f'AI: {response or "(leer)"}')
-            self.chat_view.append('')
+            if response:
+                self.chat_view.append(f'AI: {response}')
+            else:
+                self.chat_view.append('System: Keine Antwort vom Provider erhalten.')
         finally:
             self._toggle_send_state(False)
 
@@ -321,20 +326,27 @@ class MCPServerRechercheDialog(QDialog):
         self.send_button.setText('Senden...' if busy else 'Senden')
 
     def _python_executable(self) -> str:
-        auto = prefs.get('auto_detect_python', True)
         override = (prefs.get('python_executable') or '').strip()
+        if override:
+            log.info("Using Python from prefs: %s", override)
+            return override
 
-        if not auto:
-            # Manual mode: require a configured path
-            if override:
-                log.info("Using Python from prefs: %s", override)
-                return override
-            # Kein Pfad konfiguriert -> sinnvoller Fehler statt kryptischem Code
+        python_cmd = sys.executable
+        basename = os.path.basename(python_cmd).lower()
+        # Avoid calibre launchers, try to find real python on PATH
+        if basename.startswith('calibre-') or basename == 'pythonw.exe':
+            preferred = shutil.which('python') or shutil.which('python3')
+            if preferred:
+                python_cmd = preferred
+
+        if not python_cmd or not os.path.exists(python_cmd):
             raise RuntimeError(
-                "Python-Interpreter ist nicht konfiguriert. "
-                "Entweder einen Pfad setzen oder 'Python automatisch ermitteln' aktivieren."
+                'Python-Interpreter nicht gefunden. Bitte in den Einstellungen einen gueltigen Pfad setzen.'
             )
 
-        # Auto-Modus: versuche, einen passenden Interpreter zu finden
-        return _auto_detect_python_executable(override)
+        return python_cmd
 
+
+def create_dialog(gui, icon, do_user_config):
+    d = MCPServerRechercheDialog(gui, icon, do_user_config)
+    return d
