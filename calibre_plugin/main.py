@@ -42,7 +42,6 @@ from qt.core import (
     QObject,
     pyqtSignal,
     QFileDialog,
-    QPixmap,
 )
 
 from calibre_plugins.mcp_server_recherche.config import prefs
@@ -979,19 +978,13 @@ class MCPServerRechercheDialog(QDialog):
             self.sources_layout.addStretch(1)
             return
 
-        # Fuer jeden Treffer ein Panel mit Titel, ISBN und einem umschaltbaren
-        # Auszug (Preview <-> Volltext). Der Pfeil steht dabei vor dem Auszug,
-        # analog zum Stern vor dem Titel.
+        # Jeder Treffer: vertikale Box mit Header (Stern+Titel+ISBN)
+        # und darunter Pfeil + Excerpt (umschaltbar Preview <-> Volltext).
         for hit in self._source_hits:
             container = QWidget(self.sources_panel)
-            lay = QHBoxLayout(container)
-            lay.setContentsMargins(4, 4, 4, 4)
-            lay.setSpacing(6)
-
-            # Linke Spalte: Text (Titel, ISBN, Auszug)
-            text_col = QVBoxLayout()
-            text_col.setContentsMargins(0, 0, 0, 0)
-            text_col.setSpacing(2)
+            vlay = QVBoxLayout(container)
+            vlay.setContentsMargins(4, 4, 4, 4)
+            vlay.setSpacing(4)
 
             title = hit.get('title') or 'Unbekannter Titel'
             isbn = hit.get('isbn') or ''
@@ -999,10 +992,12 @@ class MCPServerRechercheDialog(QDialog):
 
             # Kopfzeile mit Stern und Titel/ISBN
             header_row = QHBoxLayout()
+            header_row.setContentsMargins(0, 0, 0, 0)
+            header_row.setSpacing(4)
+
             mark_btn = QToolButton(container)
             mark_btn.setCheckable(True)
             mark_btn.setToolTip('Buch in Calibre markieren/entmarkieren (marked:true)')
-            # Initialen Zustand aus db.marked_ids ableiten
             is_marked = False
             if book_id is not None:
                 try:
@@ -1014,7 +1009,6 @@ class MCPServerRechercheDialog(QDialog):
             mark_btn.setText('★' if is_marked else '☆')
 
             def _on_mark_toggled(checked: bool, bid=book_id, btn=mark_btn):
-                # Button-Text entsprechend Zustand updaten und DB-Markierung toggeln
                 btn.setText('★' if checked else '☆')
                 self._toggle_mark_book(bid, checked)
 
@@ -1023,12 +1017,18 @@ class MCPServerRechercheDialog(QDialog):
 
             header_label = QLabel(f"{title}", container)
             header_label.setStyleSheet('font-weight: bold;')
+            header_label.setWordWrap(True)
             header_row.addWidget(header_label)
-            if isbn:
-                header_row.addWidget(QLabel(f"ISBN: {isbn}", container))
-            header_row.addStretch(1)
-            text_col.addLayout(header_row)
 
+            if isbn:
+                isbn_label = QLabel(f"ISBN: {isbn}", container)
+                isbn_label.setStyleSheet('font-size: 9px; color: #555;')
+                header_row.addWidget(isbn_label)
+
+            header_row.addStretch(1)
+            vlay.addLayout(header_row)
+
+            # Excerpt-Zeile direkt unter dem Header: Pfeil + Label
             excerpt_full = (hit.get('excerpt') or '').strip()
             if excerpt_full:
                 preview_lines = '\n'.join(excerpt_full.splitlines()[:3])
@@ -1050,33 +1050,18 @@ class MCPServerRechercheDialog(QDialog):
                 excerpt_label.setWordWrap(True)
                 excerpt_row.addWidget(excerpt_label)
                 excerpt_row.addStretch(1)
-                text_col.addLayout(excerpt_row)
 
-                def _toggle_excerpt(checked: bool, label=excerpt_label, btn=toggle_btn,
-                                    full=excerpt_full, preview=preview_text):
+                def _toggle_excerpt(checked: bool,
+                                    label=excerpt_label,
+                                    btn=toggle_btn,
+                                    full=excerpt_full,
+                                    preview=preview_text):
+                    # Zwischen Preview- und Volltext-Excerpt umschalten
                     label.setText(full if checked else preview)
                     btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
 
                 toggle_btn.toggled.connect(_toggle_excerpt)
-
-            lay.addLayout(text_col, 3)
-
-            # Rechte Spalte: kleines Cover aus der Calibre-DB, falls vorhanden
-            cover_label = QLabel(container)
-            cover_label.setAlignment(Qt.AlignCenter)
-            cover_label.setMinimumSize(64, 96)
-            cover_label.setMaximumSize(96, 144)
-            if book_id is not None:
-                try:
-                    cover_path = getattr(self.db, 'new_api', self.db).cover(book_id)
-                    if cover_path:
-                        pix = QPixmap(cover_path)
-                        if not pix.isNull():
-                            scaled = pix.scaled(96, 144, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-                            cover_label.setPixmap(scaled)
-                except Exception:
-                    log.exception('Konnte Cover fuer book_id=%r nicht laden', book_id)
-            lay.addWidget(cover_label, 0, Qt.AlignRight | Qt.AlignTop)
+                vlay.addLayout(excerpt_row)
 
             self.sources_layout.addWidget(container)
 
@@ -1087,8 +1072,7 @@ class MCPServerRechercheDialog(QDialog):
 
         Verwendet die offizielle marked:true-Mechanik von Calibre:
         - Alle aktuell markierten IDs werden ueber db.set_marked_ids verwaltet.
-        - Die GUI-Suche kann optional auf 'marked:true' gesetzt werden, damit
-          der Nutzer alle markierten Buecher sieht.
+        - Die GUI-Suche kann optional auf 'marked:true' gesetzt werden, damit der Nutzer alle markierten Buecher sieht.
         """
         if book_id is None:
             return
