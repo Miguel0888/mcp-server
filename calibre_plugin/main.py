@@ -978,6 +978,9 @@ class MCPServerRechercheDialog(QDialog):
             self.sources_layout.addStretch(1)
             return
 
+        # Referenz auf das Scroll-Content-Widget der Quellen-ScrollArea
+        scroll_widget = self.sources_panel.widget()
+
         # Jeder Treffer: vertikale Box mit Header (Stern+Titel+ISBN)
         # und darunter Pfeil + Excerpt (umschaltbar Preview <-> Volltext).
         for hit in self._source_hits:
@@ -1054,7 +1057,6 @@ class MCPServerRechercheDialog(QDialog):
                 excerpt_label = QLabel(preview_text, container)
                 excerpt_label.setStyleSheet('font-size: 10px; color: #555;')
                 excerpt_label.setWordWrap(True)
-                # Wichtig: Label soll die volle verfuegbare Breite nutzen
                 excerpt_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
                 excerpt_row.addWidget(excerpt_label, 1)
                 excerpt_row.addStretch(0)
@@ -1063,13 +1065,26 @@ class MCPServerRechercheDialog(QDialog):
                                     label=excerpt_label,
                                     btn=toggle_btn,
                                     full=excerpt_full,
-                                    preview=preview_text):
+                                    preview=preview_text,
+                                    row_container=container,
+                                    scroll_content=scroll_widget):
                     # Beim Oeffnen kompletten Text anzeigen, beim Schliessen wieder Preview.
                     label.setText(full if checked else preview)
                     btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
-                    # Nach Textwechsel Layout neu berechnen lassen, damit der Zeilenumbruch passt
+
+                    # Label neu vermessen
                     label.adjustSize()
                     label.updateGeometry()
+
+                    # Container fuer diesen Treffer neu vermessen
+                    row_container.adjustSize()
+                    row_container.updateGeometry()
+
+                    # Auch das Scroll-Content-Widget der Quellen-Neu berechnen,
+                    # damit die ScrollArea die neue Hoehe uebernimmt.
+                    if scroll_content is not None:
+                        scroll_content.adjustSize()
+                        scroll_content.updateGeometry()
 
                 toggle_btn.toggled.connect(_toggle_excerpt)
                 vlay.addLayout(excerpt_row)
