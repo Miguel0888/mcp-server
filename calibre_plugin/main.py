@@ -1054,8 +1054,10 @@ class MCPServerRechercheDialog(QDialog):
                 excerpt_label = QLabel(preview_text, container)
                 excerpt_label.setStyleSheet('font-size: 10px; color: #555;')
                 excerpt_label.setWordWrap(True)
-                excerpt_row.addWidget(excerpt_label)
-                excerpt_row.addStretch(1)
+                # Wichtig: Label soll die volle verfuegbare Breite nutzen
+                excerpt_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+                excerpt_row.addWidget(excerpt_label, 1)
+                excerpt_row.addStretch(0)
 
                 def _toggle_excerpt(checked: bool,
                                     label=excerpt_label,
@@ -1065,6 +1067,9 @@ class MCPServerRechercheDialog(QDialog):
                     # Beim Oeffnen kompletten Text anzeigen, beim Schliessen wieder Preview.
                     label.setText(full if checked else preview)
                     btn.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+                    # Nach Textwechsel Layout neu berechnen lassen, damit der Zeilenumbruch passt
+                    label.adjustSize()
+                    label.updateGeometry()
 
                 toggle_btn.toggled.connect(_toggle_excerpt)
                 vlay.addLayout(excerpt_row)
