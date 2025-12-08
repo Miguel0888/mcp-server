@@ -14,10 +14,9 @@ if False:
 
 import logging
 import os
-import shutil
+import subprocess
 import sys
 from pathlib import Path
-import threading
 
 from qt.core import (
     QDialog,
@@ -32,7 +31,6 @@ from qt.core import (
 
 from calibre_plugins.mcp_server_recherche.config import prefs
 from calibre_plugins.mcp_server_recherche.provider_client import ChatProviderClient
-from calibre_plugins.mcp_server_recherche.server_runner import MCPServerThread
 
 
 log = logging.getLogger(__name__)
@@ -55,7 +53,6 @@ class MCPServerRechercheDialog(QDialog):
 
         self.server_running = False
         self.server_process: subprocess.Popen | None = None
-        self.server_thread: MCPServerThread | None = None
         self.chat_client = ChatProviderClient(prefs)
         self.pending_request = False
 
@@ -172,7 +169,7 @@ class MCPServerRechercheDialog(QDialog):
             self.chat_view.append('System: Kein Calibre-Bibliothekspfad konfiguriert und kein aktuelle Bibliothek gefunden.')
             return
 
-        if self.server_thread and self.server_thread.is_running:
+        if self.server_running:
             self.chat_view.append('System: MCP Server laeuft bereits.')
             return
 
@@ -184,23 +181,34 @@ class MCPServerRechercheDialog(QDialog):
             library_path,
         )
 
-        self.server_thread = MCPServerThread(host=host, port=port, library_path=library_path)
-        self.server_thread.start()
-        if not self.server_thread.wait_until_started(timeout=3):
-            error = self.server_thread.last_error or 'Unbekannter Fehler'
-            self.chat_view.append(f'System: MCP Server konnte nicht starten: {error}')
-            self.server_thread = None
-            return
+        # Start the server process
+        self.server_process = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "calibre_mcp_server",
+                "--host", host,
+                "--port", str(port),
+                "--library-path", library_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
-        self.server_running = True
-        self.server_button.setText('Server stoppen')
-        self.chat_view.append(f'System: MCP Server gestartet auf ws://{host}:{port}.')
-        self.server_monitor.start()
+        # Wait for the server to start
+        QTimer.singleShot(1000, self._check_server_started)
+
+    def _check_server_started(self):
+        if self.server_process and self.server_process.poll() is None:
+            self.server_running = True
+            self.server_button.setText('Server stoppen')
+            self.chat_view.append(f'System: MCP Server gestartet auf ws://{prefs["server_host"]}:{prefs["server_port"]}.')
+            self.server_monitor.start()
+        else:
+            self.chat_view.append('System: Fehler beim Starten des MCP Servers.')
+            self.server_process = None
 
     def _stop_server(self):
-        if self.server_thread:
-            self.server_thread.stop()
-            self.server_thread = None
         if self.server_process:
             try:
                 self.server_process.terminate()
@@ -213,15 +221,11 @@ class MCPServerRechercheDialog(QDialog):
         self.server_monitor.stop()
 
     def _monitor_server(self):
-        if self.server_thread and not self.server_thread.is_running:
-            error = self.server_thread.last_error
-            self.server_thread = None
+        if self.server_process and self.server_process.poll() is not None:
+            self.server_process = None
             self.server_running = False
             self.server_button.setText('Server starten')
-            msg = 'System: MCP Server beendet.'
-            if error:
-                msg += f' Fehler: {error}'
-            self.chat_view.append(msg)
+            self.chat_view.append('System: MCP Server beendet.')
             self.server_monitor.stop()
 
     def closeEvent(self, event):
@@ -266,4 +270,3 @@ class MCPServerRechercheDialog(QDialog):
             if preferred:
                 python_cmd = preferred
         return python_cmd
-
