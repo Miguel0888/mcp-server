@@ -335,9 +335,9 @@ class MCPServerRechercheDialog(QDialog):
         self.newchat_button.clicked.connect(self.new_chat)
         top_row.addWidget(self.newchat_button)
 
-        # Debug-Checkbox fuer Tool-Trace
+        # Debug-Checkbox fuer Tool-Trace, Zustand aus Prefs wiederherstellen
         self.debug_checkbox = QCheckBox('Tool-Details anzeigen', self)
-        self.debug_checkbox.setChecked(True)
+        self.debug_checkbox.setChecked(prefs.get('debug_trace_enabled', True))
         top_row.addWidget(self.debug_checkbox)
 
         top_row.addStretch(1)
@@ -385,7 +385,18 @@ class MCPServerRechercheDialog(QDialog):
         # Window setup
         self.setWindowTitle('MCP Server Recherche')
         self.setWindowIcon(icon)
-        self.resize(700, 500)
+        # Fenstergroesse aus Prefs wiederherstellen oder beim ersten Mal
+        # an die Groesse des Calibre-Hauptfensters anlehnen.
+        w = prefs.get('window_width', 0) or 0
+        h = prefs.get('window_height', 0) or 0
+        if w > 0 and h > 0:
+            self.resize(w, h)
+        else:
+            try:
+                main_size = gui.size()
+                self.resize(main_size)
+            except Exception:
+                self.resize(800, 600)
 
         # Detect initial library path
         self.calibre_library_path = self._detect_calibre_library()
@@ -400,6 +411,19 @@ class MCPServerRechercheDialog(QDialog):
         self.trace_signal.connect(self._append_trace)
 
         self.agent = RechercheAgent(prefs, trace_callback=self._trace_from_worker)
+
+    def closeEvent(self, event):
+        # Fenstergroesse und Debug-Checkbox-Zustand in Prefs sichern,
+        # bevor der Dialog geschlossen wird.
+        try:
+            size = self.size()
+            prefs['window_width'] = size.width()
+            prefs['window_height'] = size.height()
+            prefs['debug_trace_enabled'] = self.debug_checkbox.isChecked()
+        except Exception:
+            log.exception("Failed to persist dialog geometry / debug flag")
+        self._stop_server()
+        super().closeEvent(event)
 
     # ----------------------------- Statusbar-Helfer ---------------------
 
@@ -606,6 +630,15 @@ class MCPServerRechercheDialog(QDialog):
         self._enqueue_status(msg)
 
     def closeEvent(self, event):
+        # Fenstergroesse und Debug-Checkbox-Zustand in Prefs sichern,
+        # bevor der Dialog geschlossen wird.
+        try:
+            size = self.size()
+            prefs['window_width'] = size.width()
+            prefs['window_height'] = size.height()
+            prefs['debug_trace_enabled'] = self.debug_checkbox.isChecked()
+        except Exception:
+            log.exception("Failed to persist dialog geometry / debug flag")
         self._stop_server()
         super().closeEvent(event)
 

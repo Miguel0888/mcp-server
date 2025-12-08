@@ -64,6 +64,10 @@ prefs.defaults['query_planner_hint'] = ''
 prefs.defaults['answer_style_hint'] = ''
 # Hint fuer Schlagwort-Extraktion
 prefs.defaults['keyword_extraction_hint'] = ''
+# UI-Layout-Defaults fuer den Chat-Dialog
+prefs.defaults['window_width'] = 800
+prefs.defaults['window_height'] = 600
+prefs.defaults['debug_trace_enabled'] = True
 
 ensure_model_prefs(prefs)
 
