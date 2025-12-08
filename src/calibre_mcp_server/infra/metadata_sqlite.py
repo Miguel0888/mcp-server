@@ -37,14 +37,47 @@ class MetadataRepository(object):
     def search_fulltext(self, query: str, limit: int) -> List[FulltextHit]:
         """Search in title, ISBN and comments using simple LIKE matching.
 
-        This is a pragmatic first step before wiring up Calibre's dedicated
-        full-text-search.db index. It already returns real data from the
-        library and can later be swapped out without changing callers.
+        Diese Implementierung unterstuetzt auch Mehrwort-Queries.
+        Die Query wird in simple Tokens zerlegt (Whitespace-Separation),
+        die dann je nach Operator (AND/OR) in mehrere LIKE-Bedingungen
+        uebersetzt werden. So koennen Anfragen wie "fahrzeug bussysteme"
+        oder "fahrzeug, bussysteme" sinnvoll aufgelöst werden, ohne einen
+        vollstaendigen boolschen Parser zu benoetigen.
         """
-        pattern = f"%{query}%"
+        raw = (query or "").strip()
+        if not raw:
+            return []
+
+        # Tokens sehr defensiv extrahieren: Whitespace + Kommata als Trenner
+        import re
+
+        tokens = [t for t in re.split(r"[\s,;]+", raw) if t]
+        if not tokens:
+            tokens = [raw]
+
+        # Aktuell besteht nur eine einfache AND-Semantik: alle Token muessen
+        # irgendwo in Titel/ISBN/Kommentar vorkommen. Das kann spaeter ueber
+        # Konfiguration erweitert werden.
+        operator = "AND"
+
         hits: List[FulltextHit] = []
 
-        sql = """
+        base_clause = "(" + " OR ".join(
+            [
+                "lower(b.title) LIKE lower(?)",
+                "lower(COALESCE(b.isbn, '')) LIKE lower(?)",
+                "lower(COALESCE(c.text, '')) LIKE lower(?)",
+            ]
+        ) + ")"
+
+        if operator == "AND":
+            where_clauses = [base_clause for _ in tokens]
+            where_sql = " AND ".join(where_clauses)
+        else:  # OR-Fallback, falls spaeter verwendet
+            where_sql = base_clause
+            tokens = [" ".join(tokens)]
+
+        sql = f"""
         SELECT
             b.id AS book_id,
             b.title AS title,
@@ -53,24 +86,28 @@ class MetadataRepository(object):
         FROM books b
         LEFT JOIN comments c ON c.book = b.id
         WHERE
-            lower(b.title) LIKE lower(?)
-            OR lower(COALESCE(b.isbn, '')) LIKE lower(?)
-            OR lower(COALESCE(c.text, '')) LIKE lower(?)
+            {where_sql}
         ORDER BY b.id
         LIMIT ?
         """
 
+        params = []
+        for tok in tokens:
+            pattern = f"%{tok}%"
+            params.extend([pattern, pattern, pattern])
+        params.append(limit)
+
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
-            cur.execute(sql, (pattern, pattern, pattern, limit))
+            cur.execute(sql, params)
             rows = cur.fetchall()
 
         for row in rows:
             comments = row["comments"] or ""
-            snippet = self._build_snippet(comments, query)
+            # Snippet weiterhin auf der Original-Query basieren lassen
+            snippet = self._build_snippet(comments, raw)
             if not snippet:
-                # Fall back to title if there is no useful comment text.
                 snippet = row["title"] or ""
 
             hits.append(
