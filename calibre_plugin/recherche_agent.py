@@ -165,10 +165,10 @@ class RechercheAgent(object):
         """Erzeuge Suchabfragen fuer die Volltextsuchen.
 
         Wenn use_llm_query_planning aktiviert ist, wird zunaechst der LLM
-        benutzt, um Suchphrasen vorzuschlagen. Anschliessend werden aus der
-        Frage (und optional den LLM-Vorschlaegen) Schlagwoerter extrahiert
-        und in boolsche Volltextqueries (z. B. "bus AND fahrzeug AND can")
-        umgewandelt.
+        benutzt, um Suchphrasen und Schlagwoerter vorzuschlagen. Anschliessend
+        werden daraus boolsche Volltextqueries (z. B. "bus AND fahrzeug AND can")
+        gebaut. Bei Nachfragen fliessen sowohl die letzte als auch die aktuelle
+        Frage in die Schlagwortbasis ein.
         """
         use_llm = bool(self.prefs.get('use_llm_query_planning', True))
         raw_queries: List[str] = []
@@ -183,10 +183,13 @@ class RechercheAgent(object):
         if use_llm:
             planning_prompt = (
                 "Du hilfst dabei, Fragen anhand einer Calibre-Bibliothek zu beantworten.\n"
-                "Formuliere bis zu drei kurze Suchabfragen fuer eine Volltextsuche, eine pro Zeile.\n"
-                "Nutze dabei vor allem zentrale Fachbegriffe und Titelwoerter, keine ganzen Saetze.\n\n"
+                "Analysiere die Frage und schlage bis zu drei kurze, praegende Volltext-Queries vor,\n"
+                "die sich gut fuer eine Volltextsuche in einer technischen Fachbibliothek eignen.\n"
+                "Nutze vor allem zentrale Fachbegriffe, Abkuerzungen und Synonyme (z. B. CAN, LIN,\n"
+                "Local Interconnect Network, Fahrzeugbus, Bordnetz usw.).\n"
+                "Verwende bei Bedarf einfache boolsche Operatoren AND/OR.\n\n"
                 f"Frage:\n{question}\n\n"
-                "Gib nur die Suchabfragen ohne Erklaerungen aus."
+                "Gib nur die Suchabfragen ohne Erklaerungen aus, eine pro Zeile."
             )
 
             try:
@@ -206,27 +209,23 @@ class RechercheAgent(object):
 
         # Nun Schlagwoerter extrahieren und in boolsche Volltextqueries
         keyword_queries: List[str] = []
-        # Schlagwoerter aus der kombinierten Basis extrahieren, damit bei
-        # Nachfragen ("Sag mir mehr zu LIN") die Begriffe aus der
-        # vorherigen Frage ("Fahrzeug-Bussysteme") erhalten bleiben.
+
+        # 1) Zentrale Keyword-basierte Query aus kombinierter Basis
         kws = self._extract_keywords(keyword_basis)
         if kws:
             combined_query = self._keywords_to_query(kws)
             keyword_queries.append(combined_query)
 
-        # Optional weitere Varianten auf Basis der LLM-Rohqueries aufbauen
+        # 2) LLM-Vorschlaege direkt als Queries mitverwenden (bereits in
+        # boolscher FT-Sprache formuliert), sofern sinnvoll
         for q in raw_queries:
-            if q == question:
-                # schon ueber keyword_basis abgedeckt
+            q_clean = q.strip()
+            if not q_clean:
                 continue
-            extra_kws = self._extract_keywords(q)
-            if not extra_kws:
-                continue
-            q_str = self._keywords_to_query(extra_kws)
-            if q_str not in keyword_queries:
-                keyword_queries.append(q_str)
+            if q_clean not in keyword_queries:
+                keyword_queries.append(q_clean)
 
-        # Fallback: wenn keine Keywords erkannt wurden, nehme Roh-Queries
+        # Fallback: wenn keine Keywords erkannt wurden, nehme nur Roh-Queries
         if not keyword_queries:
             keyword_queries = raw_queries
 
@@ -256,6 +255,8 @@ class RechercheAgent(object):
             'ist', 'sind', 'was', 'wie', 'warum', 'welche', 'welcher', 'welches',
             'gibt', 'es', 'zu', 'im', 'in', 'am', 'an', 'den', 'dem', 'des',
             'the', 'a', 'an', 'of', 'for', 'to', 'on', 'in', 'and', 'or',
+            # haeufige dialogphrasen, die keine Suchbegriffe sind
+            'sag', 'sage', 'mehr', 'mir', 'bitte', 'genau', 'erzaehl', 'erzaehle',
         }
 
         keywords: List[str] = []
