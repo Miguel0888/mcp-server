@@ -1173,7 +1173,9 @@ class MCPServerRechercheDialog(QDialog):
     def _update_http_conn_label(self) -> None:
         host = (prefs.get('http_server_host', '127.0.0.1') or '127.0.0.1').strip()
         port = str(prefs.get('http_server_port', '8000') or '8000').strip()
-        self.http_conn_label.setText(f'HTTP MCP (lokal): http://{host}:{port}/mcp (Auth: Bearer)')
+        auth_enabled = bool(prefs.get('http_auth_enabled', False))
+        auth_text = 'Auth: Bearer' if auth_enabled else 'Auth: none'
+        self.http_conn_label.setText(f'HTTP MCP (lokal): http://{host}:{port}/mcp ({auth_text})')
 
     def toggle_http_server(self) -> None:
         if self.http_server_running:
@@ -1188,16 +1190,18 @@ class MCPServerRechercheDialog(QDialog):
         except ValueError:
             port = 8000
 
+        auth_enabled = bool(prefs.get('http_auth_enabled', False))
         secret = (prefs.get('http_shared_secret', '') or '').strip()
-        if not secret:
-            self._enqueue_status('Kein Shared Secret konfiguriert (http_shared_secret).')
-            return
 
         library_override = prefs['library_path'].strip()
         use_active = prefs.get('use_active_library', True)
         library_path = self.calibre_library_path if (use_active or not library_override) else library_override
         if not library_path:
             self._enqueue_status('Keine Calibre-Bibliothek gefunden/konfiguriert.')
+            return
+
+        if auth_enabled and not secret:
+            self._enqueue_status('Shared-Secret-Auth ist aktiv, aber kein Secret ist konfiguriert.')
             return
 
         try:
@@ -1210,9 +1214,14 @@ class MCPServerRechercheDialog(QDialog):
         env['CALIBRE_LIBRARY_PATH'] = library_path
         env['MCP_HTTP_HOST'] = host
         env['MCP_HTTP_PORT'] = str(port)
-        env['MCP_SHARED_SECRET'] = secret
 
-        cmd = [python_cmd, '-m', 'calibre_mcp_server.secure_http_server']
+        if auth_enabled:
+            env['MCP_SHARED_SECRET'] = secret
+            module_name = 'calibre_mcp_server.secure_http_server'
+        else:
+            module_name = 'calibre_mcp_server.http_server'
+
+        cmd = [python_cmd, '-m', module_name]
 
         popen_kwargs = {
             'env': env,
