@@ -6,15 +6,25 @@ build-backend = "setuptools.build_meta"
 name = "calibre-mcp-server"
 version = "0.1.0"
 description = "MCP server for Calibre full-text research and excerpts"
-authors = [
-  { name = "Miguel" }
-]
+authors = [{ name = "Miguel" }]
 requires-python = ">=3.10"
 dependencies = [
   "fastmcp>=0.1.0",
   "pydantic>=2.0",
   "websockets>=12.0",
+
+  # Needed for secure_http_server.py (ASGI + middleware)
+  "uvicorn>=0.27",
+  "starlette>=0.37",
+]
+
+[project.optional-dependencies]
+forms = [
+  "python-multipart>=0.0.9",
 ]
 
 [project.scripts]
 calibre-mcp-server = "calibre_mcp_server.main:run"
+calibre-mcp-ws = "calibre_mcp_server.websocket_server:run_from_env"
+calibre-mcp-http = "calibre_mcp_server.http_server:run_from_env"
+calibre-mcp-http-secure = "calibre_mcp_server.secure_http_server:run_from_env"

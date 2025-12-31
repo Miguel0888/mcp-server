@@ -336,6 +336,8 @@ class MCPServerRechercheDialog(QDialog):
         self.server_button.clicked.connect(self.toggle_server)
         top_row.addWidget(self.server_button)
 
+        self._build_http_controls(top_row, outer_layout)
+
         # Neuer Chat-Button: Verlauf loeschen & Agent-Session zuruecksetzen
         self.newchat_button = QPushButton('Neuer Chat', self)
         self.newchat_button.clicked.connect(self.new_chat)
@@ -456,6 +458,7 @@ class MCPServerRechercheDialog(QDialog):
         except Exception:
             log.exception("Failed to persist dialog geometry / debug flag")
         self._stop_server()
+        self._stop_http_server()
         super().closeEvent(event)
 
     # ----------------------------- Statusbar-Helfer ---------------------
@@ -661,19 +664,6 @@ class MCPServerRechercheDialog(QDialog):
         self.server_button.setText('Server starten')
         self.server_monitor.stop()
         self._enqueue_status(msg)
-
-    def closeEvent(self, event):
-        # Fenstergroesse und Debug-Checkbox-Zustand in Prefs sichern,
-        # bevor der Dialog geschlossen wird.
-        try:
-            size = self.size()
-            prefs['window_width'] = size.width()
-            prefs['window_height'] = size.height()
-            prefs['debug_trace_enabled'] = self.debug_checkbox.isChecked()
-        except Exception:
-            log.exception("Failed to persist dialog geometry / debug flag")
-        self._stop_server()
-        super().closeEvent(event)
 
     # ------------------------------------------------------------------ Chat
 
@@ -1162,3 +1152,147 @@ class MCPServerRechercheDialog(QDialog):
                 log.exception('Konnte Suche marked:true nicht aktualisieren')
         except Exception:
             log.exception('Failed to toggle marked state for book_id=%r', book_id)
+
+    def _build_http_controls(self, top_row, outer_layout) -> None:
+        # Create button to start/stop HTTP MCP server (for ChatGPT connector)
+        self.http_server_running = False
+        self.http_server_process = None
+
+        self.http_server_monitor = QTimer(self)
+        self.http_server_monitor.setInterval(1000)
+        self.http_server_monitor.timeout.connect(self._monitor_http_server)
+
+        self.http_server_button = QPushButton('HTTP-Server starten', self)
+        self.http_server_button.clicked.connect(self.toggle_http_server)
+        top_row.addWidget(self.http_server_button)
+
+        self.http_conn_label = QLabel('', self)
+        outer_layout.addWidget(self.http_conn_label)
+        self._update_http_conn_label()
+
+    def _update_http_conn_label(self) -> None:
+        host = (prefs.get('http_server_host', '127.0.0.1') or '127.0.0.1').strip()
+        port = str(prefs.get('http_server_port', '8000') or '8000').strip()
+        self.http_conn_label.setText(f'HTTP MCP (lokal): http://{host}:{port}/mcp (Auth: Bearer)')
+
+    def toggle_http_server(self) -> None:
+        if self.http_server_running:
+            self._stop_http_server()
+        else:
+            self._start_http_server()
+
+    def _start_http_server(self) -> None:
+        host = (prefs.get('http_server_host', '127.0.0.1') or '127.0.0.1').strip()
+        try:
+            port = int(str(prefs.get('http_server_port', '8000') or '8000').strip())
+        except ValueError:
+            port = 8000
+
+        secret = (prefs.get('http_shared_secret', '') or '').strip()
+        if not secret:
+            self._enqueue_status('Kein Shared Secret konfiguriert (http_shared_secret).')
+            return
+
+        library_override = prefs['library_path'].strip()
+        use_active = prefs.get('use_active_library', True)
+        library_path = self.calibre_library_path if (use_active or not library_override) else library_override
+        if not library_path:
+            self._enqueue_status('Keine Calibre-Bibliothek gefunden/konfiguriert.')
+            return
+
+        try:
+            python_cmd = self._python_executable()
+        except RuntimeError as exc:
+            self._enqueue_status(f'System: {exc}')
+            return
+
+        env = os.environ.copy()
+        env['CALIBRE_LIBRARY_PATH'] = library_path
+        env['MCP_HTTP_HOST'] = host
+        env['MCP_HTTP_PORT'] = str(port)
+        env['MCP_SHARED_SECRET'] = secret
+
+        cmd = [python_cmd, '-m', 'calibre_mcp_server.secure_http_server']
+
+        popen_kwargs = {
+            'env': env,
+            'stdout': subprocess.PIPE,
+            'stderr': subprocess.PIPE,
+            'text': True,
+            'encoding': 'utf-8',
+        }
+        if os.name == 'nt':
+            try:
+                flags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+            except AttributeError:
+                flags = 0
+            popen_kwargs['creationflags'] = flags
+
+        try:
+            self.http_server_process = subprocess.Popen(cmd, **popen_kwargs)
+        except OSError as exc:
+            self.http_server_process = None
+            self._enqueue_status(f'HTTP MCP Server konnte nicht starten: {exc}')
+            return
+
+        self.http_server_running = True
+        self.http_server_button.setText('HTTP-Server stoppen')
+        self._update_http_conn_label()
+        self._enqueue_status(f'HTTP MCP Server gestartet: http://{host}:{port}/mcp')
+        self.http_server_monitor.start()
+
+    def _stop_http_server(self) -> None:
+        proc = self.http_server_process
+        self.http_server_process = None
+
+        if not proc:
+            self.http_server_running = False
+            self.http_server_button.setText('HTTP-Server starten')
+            self.http_server_monitor.stop()
+            self._enqueue_status('HTTP MCP Server wurde gestoppt.')
+            return
+
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+        except Exception:
+            log.exception("Failed to terminate HTTP MCP server")
+
+        self.http_server_running = False
+        self.http_server_button.setText('HTTP-Server starten')
+        self.http_server_monitor.stop()
+        self._enqueue_status('HTTP MCP Server wurde gestoppt.')
+
+    def _monitor_http_server(self) -> None:
+        proc = self.http_server_process
+        if not proc:
+            self.http_server_monitor.stop()
+            return
+
+        ret = proc.poll()
+        if ret is None:
+            return
+
+        stderr = ''
+        try:
+            if proc.stderr:
+                stderr = proc.stderr.read()
+        except Exception:
+            log.exception("Failed to read HTTP server stderr")
+
+        self.http_server_process = None
+        self.http_server_running = False
+        self.http_server_button.setText('HTTP-Server starten')
+        self.http_server_monitor.stop()
+
+        if ret != 0:
+            first_line = (stderr.strip().splitlines() or [''])[0]
+            self._enqueue_status(f'System: HTTP MCP Server beendet (Code {ret}). {first_line}')
+        else:
+            self._enqueue_status('System: HTTP MCP Server wurde normal beendet.')
+
+
