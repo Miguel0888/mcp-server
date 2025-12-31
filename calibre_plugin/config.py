@@ -21,6 +21,7 @@ from qt.core import (
     QCheckBox,
 )
 import os
+import secrets
 
 from .providers import (
     ensure_model_prefs,
@@ -45,6 +46,12 @@ prefs.defaults['selected_model'] = {}
 prefs.defaults['use_active_library'] = True
 prefs.defaults['python_executable'] = ''
 prefs.defaults['auto_detect_python'] = True
+
+# HTTP MCP defaults (ChatGPT connector)
+prefs.defaults['http_server_host'] = '127.0.0.1'
+prefs.defaults['http_server_port'] = '8000'
+prefs.defaults['http_auth_enabled'] = False
+prefs.defaults['http_shared_secret'] = ''
 
 # Defaults fuer Recherche-Agent
 prefs.defaults['max_query_variants'] = 3
@@ -135,6 +142,47 @@ class MCPServerRechercheConfigWidget(QWidget):
         self.auto_python_checkbox.setChecked(prefs.get('auto_detect_python', True))
         self.auto_python_checkbox.stateChanged.connect(self._python_mode_changed)
         server_form.addRow('', self.auto_python_checkbox)
+
+        # HTTP MCP settings -------------------------------------------------
+        http_group = QGroupBox(_('HTTP MCP (ChatGPT Connector)'), self)
+        http_form = QFormLayout(http_group)
+        http_group.setLayout(http_form)
+        layout.addWidget(http_group)
+
+        self.http_host_edit = QLineEdit(self)
+        self.http_host_edit.setText(prefs.get('http_server_host', '127.0.0.1'))
+        http_form.addRow(_('HTTP Host:'), self.http_host_edit)
+
+        self.http_port_edit = QLineEdit(self)
+        self.http_port_edit.setText(str(prefs.get('http_server_port', '8000')))
+        http_form.addRow(_('HTTP Port:'), self.http_port_edit)
+
+        self.http_auth_enabled_checkbox = QCheckBox(_('Shared-Secret-Auth aktivieren (Bearer)'), self)
+        self.http_auth_enabled_checkbox.setChecked(bool(prefs.get('http_auth_enabled', False)))
+        self.http_auth_enabled_checkbox.stateChanged.connect(self._http_auth_mode_changed)
+        http_form.addRow('', self.http_auth_enabled_checkbox)
+
+        secret_row = QHBoxLayout()
+        self.http_secret_edit = QLineEdit(self)
+        self.http_secret_edit.setEchoMode(QLineEdit.Password)
+        self.http_secret_edit.setText(prefs.get('http_shared_secret', ''))
+        self.http_secret_edit.setPlaceholderText(_('Nur noetig, wenn Auth aktiv ist'))
+
+        self.http_secret_generate_btn = QPushButton(_('Secret generieren'), self)
+        self.http_secret_generate_btn.clicked.connect(self._generate_http_secret)
+
+        secret_row.addWidget(self.http_secret_edit)
+        secret_row.addWidget(self.http_secret_generate_btn)
+        http_form.addRow(_('Shared Secret:'), secret_row)
+
+        http_info = QLabel(
+            _(
+                'Der HTTP MCP Server ist fuer ChatGPT-Connector/Tunnel gedacht.\n'
+                'Wenn du "Gemischt" nutzt, kannst du Auth deaktivieren.'
+            ),
+            self,
+        )
+        http_form.addRow(http_info)
 
         # Recherche-Parameter ----------------------------------------------
         tuning_group = QGroupBox(_('Recherche-Feintuning'), self)
@@ -282,6 +330,7 @@ class MCPServerRechercheConfigWidget(QWidget):
         self._update_selection_labels()
         self._update_library_inputs()
         self._update_python_inputs()
+        self._update_http_auth_inputs()
 
         # Suchmodus ---------------------------------------------------------
         search_group = QGroupBox(_('Suchmodus'), self)
@@ -342,6 +391,20 @@ class MCPServerRechercheConfigWidget(QWidget):
         self.python_edit.setEnabled(not auto_enabled)
         self.python_browse.setEnabled(not auto_enabled)
 
+    def _http_auth_mode_changed(self, state):
+        # Persist auth flag and update inputs
+        prefs['http_auth_enabled'] = bool(state)
+        self._update_http_auth_inputs()
+
+    def _update_http_auth_inputs(self):
+        enabled = self.http_auth_enabled_checkbox.isChecked()
+        self.http_secret_edit.setEnabled(enabled)
+        self.http_secret_generate_btn.setEnabled(enabled)
+
+    def _generate_http_secret(self):
+        # Generate secret and write it into UI field.
+        self.http_secret_edit.setText(secrets.token_urlsafe(32))
+
     def save_settings(self):
         """Persist user changes to JSONConfig."""
         prefs['server_host'] = self.host_edit.text().strip() or '127.0.0.1'
@@ -355,6 +418,20 @@ class MCPServerRechercheConfigWidget(QWidget):
 
         prefs['auto_detect_python'] = self.auto_python_checkbox.isChecked()
         prefs['python_executable'] = self.python_edit.text().strip()
+
+        # Persist HTTP MCP settings
+        prefs['http_server_host'] = self.http_host_edit.text().strip() or '127.0.0.1'
+
+        raw_port = self.http_port_edit.text().strip() or '8000'
+        try:
+            port_value = int(raw_port)
+        except Exception:
+            port_value = 8000
+        prefs['http_server_port'] = str(port_value)
+
+        auth_enabled = self.http_auth_enabled_checkbox.isChecked()
+        prefs['http_auth_enabled'] = auth_enabled
+        prefs['http_shared_secret'] = self.http_secret_edit.text().strip() if auth_enabled else ''
 
         # Recherche-Parameter aus UI lesen (mit einfachen Fallbacks)
         def _read_int(edit: QLineEdit, default: int) -> int:
@@ -460,3 +537,5 @@ class MCPServerRechercheConfigWidget(QWidget):
         self.selected_provider_label.setText(describe_provider(cfg))
         self.selected_model_label.setText(selected.get('model') or '')
         self._update_library_inputs()
+        self._update_python_inputs()
+        self._update_http_auth_inputs()
