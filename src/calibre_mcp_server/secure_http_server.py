@@ -3,12 +3,8 @@ from __future__ import annotations
 
 import contextlib
 import os
-from typing import Optional
 
 from starlette.applications import Starlette
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import PlainTextResponse
 from starlette.routing import Mount
 
 import uvicorn
@@ -17,21 +13,42 @@ from .config_loader import load_config_from_env
 from .main import create_mcp_server
 
 
-class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
+class BearerAuthASGIMiddleware:
     def __init__(self, app, expected_token: str) -> None:
-        super().__init__(app)
-        self._expected_header_value = "Bearer " + (expected_token or "")
+        self._app = app
+        self._expected = "Bearer " + (expected_token or "")
 
-    async def dispatch(self, request: Request, call_next):
-        # Allow simple health check without auth (optional)
-        if request.url.path in ("/health",):
-            return PlainTextResponse("ok", status_code=200)
+    async def __call__(self, scope, receive, send) -> None:
+        if scope.get("type") != "http":
+            await self._app(scope, receive, send)
+            return
 
-        auth = request.headers.get("authorization", "")
-        if auth != self._expected_header_value:
-            return PlainTextResponse("Unauthorized", status_code=401)
+        path = scope.get("path") or ""
+        if path == "/health":
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"text/plain; charset=utf-8")],
+                }
+            )
+            await send({"type": "http.response.body", "body": b"ok"})
+            return
 
-        return await call_next(request)
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        auth = headers.get("authorization", "")
+        if auth != self._expected:
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"content-type", b"text/plain; charset=utf-8")],
+                }
+            )
+            await send({"type": "http.response.body", "body": b"Unauthorized"})
+            return
+
+        await self._app(scope, receive, send)
 
 
 def _read_required_env(name: str) -> str:
@@ -41,35 +58,29 @@ def _read_required_env(name: str) -> str:
     return value
 
 
-def create_app(shared_secret: str) -> Starlette:
+def create_app(shared_secret: str):
     cfg = load_config_from_env()
     mcp = create_mcp_server(cfg)
 
-    # NOTE: This follows the MCP SDK mounting pattern (run session manager in lifespan).
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
-        # If your FastMCP implementation exposes session_manager, keep this.
-        # If not available in your fastmcp version, remove this block.
         session_manager = getattr(mcp, "session_manager", None)
         if session_manager is None:
             yield
             return
-
         async with session_manager.run():
             yield
 
-    # Streamable HTTP is typically exposed at /mcp by default when mounted. :contentReference[oaicite:4]{index=4}
     streamable_app_factory = getattr(mcp, "streamable_http_app", None)
     if not callable(streamable_app_factory):
         raise RuntimeError("FastMCP does not provide streamable_http_app(); cannot expose /mcp endpoint.")
 
-    app = Starlette(
+    inner_app = Starlette(
         routes=[Mount("/", app=streamable_app_factory())],
         lifespan=lifespan,
     )
 
-    app.add_middleware(BearerTokenAuthMiddleware, expected_token=shared_secret)
-    return app
+    return BearerAuthASGIMiddleware(inner_app, expected_token=shared_secret)
 
 
 def run_from_env() -> None:
