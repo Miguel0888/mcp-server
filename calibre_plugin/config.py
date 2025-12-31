@@ -19,6 +19,7 @@ from qt.core import (
     QGroupBox,
     QComboBox,
     QCheckBox,
+    QApplication,
 )
 import os
 import secrets
@@ -163,16 +164,26 @@ class MCPServerRechercheConfigWidget(QWidget):
         http_form.addRow('', self.http_auth_enabled_checkbox)
 
         secret_row = QHBoxLayout()
+
         self.http_secret_edit = QLineEdit(self)
         self.http_secret_edit.setEchoMode(QLineEdit.Password)
         self.http_secret_edit.setText(prefs.get('http_shared_secret', ''))
         self.http_secret_edit.setPlaceholderText(_('Nur noetig, wenn Auth aktiv ist'))
 
+        self.http_secret_show_btn = QPushButton(_('Anzeigen'), self)
+        self.http_secret_show_btn.clicked.connect(self._toggle_http_secret_visibility)
+
+        self.http_secret_copy_btn = QPushButton(_('Kopieren'), self)
+        self.http_secret_copy_btn.clicked.connect(self._copy_http_secret)
+
         self.http_secret_generate_btn = QPushButton(_('Secret generieren'), self)
         self.http_secret_generate_btn.clicked.connect(self._generate_http_secret)
 
         secret_row.addWidget(self.http_secret_edit)
+        secret_row.addWidget(self.http_secret_show_btn)
+        secret_row.addWidget(self.http_secret_copy_btn)
         secret_row.addWidget(self.http_secret_generate_btn)
+
         http_form.addRow(_('Shared Secret:'), secret_row)
 
         http_info = QLabel(
@@ -399,6 +410,8 @@ class MCPServerRechercheConfigWidget(QWidget):
     def _update_http_auth_inputs(self):
         enabled = self.http_auth_enabled_checkbox.isChecked()
         self.http_secret_edit.setEnabled(enabled)
+        self.http_secret_show_btn.setEnabled(enabled)
+        self.http_secret_copy_btn.setEnabled(enabled)
         self.http_secret_generate_btn.setEnabled(enabled)
 
     def _generate_http_secret(self):
@@ -539,3 +552,22 @@ class MCPServerRechercheConfigWidget(QWidget):
         self._update_library_inputs()
         self._update_python_inputs()
         self._update_http_auth_inputs()
+
+    def _toggle_http_secret_visibility(self):
+        # Toggle visibility to allow copying/verification.
+        is_password = self.http_secret_edit.echoMode() == QLineEdit.Password
+        if is_password:
+            self.http_secret_edit.setEchoMode(QLineEdit.Normal)
+            self.http_secret_show_btn.setText(_('Verbergen'))
+        else:
+            self.http_secret_edit.setEchoMode(QLineEdit.Password)
+            self.http_secret_show_btn.setText(_('Anzeigen'))
+
+    def _copy_http_secret(self):
+        # Copy secret to clipboard.
+        QApplication.clipboard().setText(self.http_secret_edit.text())
+
+    def _generate_http_secret(self):
+        # Generate secret and write it into UI field.
+        self.http_secret_edit.setText(secrets.token_urlsafe(32))
+
