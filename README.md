@@ -251,3 +251,74 @@ python tests\inspect_metadata_isbn.py 9783658024192
 ---
 
 Dieses Projekt ist experimentell – Feedback, Issues und Pull Requests sind willkommen.
+
+
+
+---
+
+## ChatGPT: HTTPS per Tunnel bereitstellen (Cloudflare / ngrok)
+
+ChatGPT kann **keinen lokalen** `localhost`/`127.0.0.1`-Server erreichen. Du brauchst deshalb eine **öffentlich erreichbare HTTPS-URL**, die auf deinen lokalen HTTP-MCP-Endpoint weiterleitet.
+
+### 1) MCP-HTTP lokal starten
+
+Starte zuerst den HTTP-MCP-Server lokal (Beispiel: Port 8000):
+
+```bash
+set CALIBRE_LIBRARY_PATH=X:\E-Books
+set MCP_HTTP_HOST=127.0.0.1
+set MCP_HTTP_PORT=8000
+python -m calibre_mcp_server.http_server
+```
+
+Danach sollte der Endpoint lokal erreichbar sein unter:
+
+* `http://127.0.0.1:8000/mcp`
+
+> Hinweis: Der **Pfad** (`/mcp`) muss zu deinem Server passen.
+
+---
+
+### 2) Cloudflare Tunnel (Quick Tunnel)
+
+**Installation (Beispiele):**
+
+* Windows: `winget install Cloudflare.cloudflared`
+* macOS: `brew install cloudflare/cloudflare/cloudflared`
+
+Tunnel starten:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+
+Du bekommst eine URL wie `https://<irgendwas>.trycloudflare.com`.
+
+**ChatGPT Connector URL:**
+
+* `https://<irgendwas>.trycloudflare.com/mcp`
+
+---
+
+### 3) Alternative: ngrok
+
+Tunnel starten:
+
+```bash
+ngrok http 8000
+```
+
+Du bekommst eine URL wie `https://<irgendwas>.ngrok-free.app`.
+
+**ChatGPT Connector URL:**
+
+* `https://<irgendwas>.ngrok-free.app/mcp`
+
+---
+
+### Sicherheitshinweis
+
+Wenn du in ChatGPT **„Gemischt“** oder **ohne OAuth** arbeitest, ist der Tunnel-Link im Zweifel dein „Schlüssel“.
+Behandle die URL wie ein Geheimnis (nicht posten, nicht in öffentliche Logs schreiben). Für echte Absicherung ist ein OAuth-Flow die robustere Lösung.
+
+---
